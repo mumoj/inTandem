@@ -53,7 +53,7 @@
 <rect class="bg" x="0" y="0" width="1000" height="540" rx="12"/>
 <defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="arrow" d="M0,0 L10,5 L0,10 z"/></marker></defs>
 <rect class="host" x="365" y="30" width="295" height="372" rx="12"/>
-<text class="hostlabel" x="378" y="50">tandem serve: one process, one event loop</text>
+<text class="hostlabel" x="378" y="50">tandem hub: one process, one event loop</text>
 <path class="edge" d="M170,90 L210,200" marker-end="url(#ah)"/>
 <path class="edge" d="M170,330 L210,220" marker-end="url(#ah)"/>
 <path class="edge" d="M330,200 L390,104" marker-end="url(#ah)"/>

@@ -3,8 +3,9 @@
 Register it once (``claude mcp add tandem -- tandem mcp``) and the planner gets
 typed tools: start an implementer, hand it a spec, wait, review, reply. The
 supervisor is started on first use for the project the planner is working in,
-outlives the MCP server, and is found again by directory; nobody types
-``tandem serve`` or ``--task``. Every reply carries the dashboard link, so the
+on this server's hub, and found again by directory; nobody types
+``tandem serve`` or ``--task``. It stops with the MCP connection and resumes
+from its state file when the planner next uses it. Every reply carries the dashboard link, so the
 human can watch from a browser without knowing tandem exists.
 
 Several implementers work on one repository at once through spawn_implementer:
@@ -100,9 +101,6 @@ NEXT_STEP: dict[WaitReason, str] = {
     WaitReason.TIMEOUT: "Still working: wait again.",
 }
 
-START_TIMEOUT = 60.0
-_CHILDREN: dict[Path, subprocess.Popen[bytes]] = {}
-"""Supervisors this server started, kept so their exit can be reaped."""
 # Clients cut long tool calls off (Codex at 60 s by default), so a wait returns
 # before that and the planner calls it again. wait is level-triggered, so
 # nothing is missed between calls.
@@ -119,11 +117,6 @@ class _Connection:
 _CONNECTION = _Connection()
 
 
-def _shared() -> bool:
-    """Whether implementers share one server and one OpenCode. Default: yes."""
-    return os.environ.get("TANDEM_OPENCODE_MODE", "shared") != "isolated"
-
-
 def _new_opencode() -> SharedHost:
     records = _state_root() / "hosts"
     binary = resolve_binary(os.environ.get("TANDEM_OPENCODE_BIN", "opencode"))
@@ -136,9 +129,6 @@ def _new_opencode() -> SharedHost:
 @contextlib.asynccontextmanager
 async def _lifespan(_server: MCPServer[None]) -> AsyncGenerator[None]:
     """Start the hub when the planner connects; stop it, and every task, when it goes."""
-    if not _shared():
-        yield
-        return
     reap_orphans(_state_root() / "hosts")
     hub = Hub(_state_root(), _new_opencode)
     await hub.start()
@@ -228,22 +218,13 @@ def _stop(task_dir: Path, timeout: float = 30.0) -> bool:
         client.post("/finish", Ok)
     path = TaskPaths.for_task(_state_root(), task_dir).manifest
     deadline = time.monotonic() + timeout
-    # A clean exit removes the manifest. The pid alone is not enough: a supervisor
-    # this server started stays a zombie, and so "alive", until it is reaped.
+    # A clean exit removes the manifest. The pid alone is not enough: a hub
+    # outlives the tasks it stops.
     while path.exists() and manifest.alive and time.monotonic() < deadline:
-        _reap()
         time.sleep(0.25)
-    _reap()
     if path.exists() and manifest.alive:
         raise ToolError(f"the implementer in {task_dir} did not stop within {timeout:.0f}s")
     return True
-
-
-def _reap() -> None:
-    """Collect the exit status of supervisors this server started and that have stopped."""
-    for task_dir, process in list(_CHILDREN.items()):
-        if process.poll() is not None:
-            del _CHILDREN[task_dir]
 
 
 def _archive_state(task_dir: Path) -> Path | None:
@@ -271,54 +252,15 @@ def _running(task_dir: Path) -> Manifest | None:
 
 
 def _spawn(task_dir: Path, model: str | None, protect: list[str] | None) -> Manifest:
-    """Start supervising ``task_dir``: on the hub, or as a ``tandem serve`` of its own."""
-    if (hub := _CONNECTION.hub) is not None:
-        start = functools.partial(hub.start_task, task_dir, model=model, protect=protect)
-        try:
-            return anyio.from_thread.run(start)
-        except (HostError, RuntimeError, ValueError) as exc:
-            raise ToolError(f"the implementer failed to start: {exc}") from exc
-    return _spawn_process(task_dir, model, protect)
-
-
-def _spawn_process(task_dir: Path, model: str | None, protect: list[str] | None) -> Manifest:
-    """``tandem serve`` for ``task_dir``, detached, once it answers. Isolated mode."""
-    paths = TaskPaths.for_task(_state_root(), task_dir)
-    paths.ensure()
-    argv = [sys.executable, "-m", "tandem", "--state-root", str(_state_root())]
-    argv += ["serve", str(task_dir)]
-    if model:
-        argv += ["--model", model]
-    for pattern in protect or []:
-        argv += ["--protect", pattern]
-    log_path = paths.root / "serve.log"
-    with log_path.open("ab") as log:
-        # A session of its own: the supervisor outlives this MCP server, and a
-        # planner restart finds it again by directory.
-        process = subprocess.Popen(
-            argv,
-            cwd=task_dir,
-            stdin=subprocess.DEVNULL,
-            stdout=log,
-            stderr=log,
-            start_new_session=True,
-        )
-    _CHILDREN[task_dir] = process
-    deadline = time.monotonic() + START_TIMEOUT
-    while time.monotonic() < deadline:
-        manifest = _running(task_dir)
-        if manifest is not None and manifest.pid == process.pid:
-            return manifest
-        if process.poll() is not None:
-            raise ToolError(f"the implementer failed to start: {_tail(log_path)}")
-        time.sleep(0.25)
-    raise ToolError(f"the implementer did not start within {START_TIMEOUT:.0f}s; see {log_path}")
-
-
-def _tail(path: Path, lines: int = 8) -> str:
-    with contextlib.suppress(OSError):
-        return " | ".join(path.read_text(errors="replace").strip().splitlines()[-lines:])
-    return "(no output)"
+    """Start supervising ``task_dir`` on this server's hub."""
+    hub = _CONNECTION.hub
+    if hub is None:
+        raise ToolError("the hub is not running: the MCP connection is starting or closing")
+    start = functools.partial(hub.start_task, task_dir, model=model, protect=protect)
+    try:
+        return anyio.from_thread.run(start)
+    except (HostError, RuntimeError, ValueError) as exc:
+        raise ToolError(f"the implementer failed to start: {exc}") from exc
 
 
 @contextlib.contextmanager

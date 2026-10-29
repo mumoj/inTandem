@@ -28,8 +28,8 @@ import uvicorn
 
 from tandem.bridge.manifest import Manifest
 from tandem.config import Settings, TaskPaths
+from tandem.hub import serve
 from tandem.opencode.server import Version
-from tandem.runtime import run
 from tests.scripted_llm import Reply, Script, ToolCall, build_app, result_path
 
 pytestmark = pytest.mark.e2e
@@ -93,7 +93,7 @@ class Harness:
 
     async def start(self) -> None:
         ready: asyncio.Future[Manifest] = asyncio.get_running_loop().create_future()
-        self._run = asyncio.create_task(run(self.settings, ready=ready.set_result))
+        self._run = asyncio.create_task(serve(self.settings, ready=ready.set_result))
         manifest = await asyncio.wait_for(asyncio.shield(ready), 90)
         headers = {"Authorization": f"Bearer {manifest.token.get_secret_value()}"}
         self.http = httpx.AsyncClient(base_url=manifest.url, headers=headers, timeout=120)
