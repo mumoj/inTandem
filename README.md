@@ -1,9 +1,9 @@
-# tandem
+# inTandem
 
 A frontier model plans. A cheaper model, running in [OpenCode](https://opencode.ai), types.
-tandem is the supervisor between them.
+inTandem is the supervisor between them.
 
-The planner (Claude Code or Codex, through tandem's MCP tools) submits a spec. tandem runs it
+The planner (Claude Code or Codex, through inTandem's MCP tools) submits a spec. inTandem runs it
 in a fresh headless OpenCode session with the model and agent the spec names, watches the
 event stream, pushes an alert when the implementer is stuck waiting on a human, and tells the
 planner exactly why a turn stopped: a result was written, a permission is pending, the model
@@ -20,12 +20,12 @@ from a dashboard in the browser.
 
 ```mermaid
 flowchart LR
-    planner["Planner<br/>Claude Code / Codex"] -->|MCP stdio| mcp["tandem mcp"]
-    phone["You, over SSH"] --> cli["tandem CLI"]
+    planner["Planner<br/>Claude Code / Codex"] -->|MCP stdio| mcp["inTandem mcp"]
+    phone["You, over SSH"] --> cli["inTandem CLI"]
     browser["You, in a browser"] -->|dashboard /ui| bridge
     mcp -->|bearer token, loopback| bridge["Bridge<br/>FastAPI"]
     cli -->|bearer token, loopback| bridge
-    subgraph host ["tandem hub: one process, one event loop"]
+    subgraph host ["inTandem hub: one process, one event loop"]
         bridge --> sup["Supervisor"]
         pump["Event pump"] --> sup
         monitor["Monitor"] --> sup
@@ -52,7 +52,7 @@ sequenceDiagram
     autonumber
     actor P as Planner<br/>(Claude Code / Codex)
     actor H as You<br/>(dashboard)
-    participant T as tandem<br/>(MCP, bridge, supervisor)
+    participant T as inTandem<br/>(MCP, bridge, supervisor)
     participant O as opencode serve
     participant M as Implementer model
 
@@ -99,34 +99,34 @@ sequenceDiagram
 ## Install
 
 Python 3.12+ and [uv](https://docs.astral.sh/uv/). OpenCode **1.x**: OpenCode 2 replaced the
-server API, and tandem refuses to start against it rather than failing with 404s.
+server API, and inTandem refuses to start against it rather than failing with 404s.
 
 ```bash
 npm i -g opencode-ai@1          # the 1.x line; tested against 1.19.3
-uv tool install .               # puts `tandem` on PATH
+uv tool install .               # puts `inTandem` on PATH
 ```
 
-Configure a provider in OpenCode as usual (`opencode auth login`). tandem uses your own
+Configure a provider in OpenCode as usual (`opencode auth login`). inTandem uses your own
 OpenCode config and adds its protected-file rules on top.
 
 ## Use it from Claude Code or Codex
 
-Register tandem once as an MCP server:
+Register inTandem once as an MCP server:
 
 ```bash
-claude mcp add tandem --scope user -- tandem mcp      # Claude Code
-codex mcp add tandem -- tandem mcp                    # Codex
+claude mcp add inTandem --scope user -- inTandem mcp      # Claude Code
+codex mcp add inTandem -- inTandem mcp                    # Codex
 ```
 
 That's all the setup there is. Ask the planner to delegate work, for example "have a cheaper
-model write the tests for citations.py through tandem", and it uses the tools:
+model write the tests for citations.py through inTandem", and it uses the tools:
 `submit_spec`, `wait`, `get_result`, `get_pending`, `reply_permission`, `send_directive`,
 `finish`, and the rest. The server's instructions teach it the planner loop.
 
-- **Nothing to start.** When the planner connects, `tandem mcp` starts one OpenCode server in
+- **Nothing to start.** When the planner connects, `inTandem mcp` starts one OpenCode server in
   the background, and the first `submit_spec` starts a supervisor for the planner's project.
   `start_implementer` is only for setting a default model or protected files.
-- **Lives as long as the planner.** Everything runs in the `tandem mcp` process and its one
+- **Lives as long as the planner.** Everything runs in the `inTandem mcp` process and its one
   OpenCode child. When the planner disconnects or exits, every supervisor finishes, capturing
   its evidence, and OpenCode stops. State stays on disk, so the next session resumes it.
 - **Any implementer, per spec.** `submit_spec` takes `model` (`provider/model`) and `agent`
@@ -149,7 +149,7 @@ land_implementer(name="farewell")            # review: the diff against where it
 land_implementer(name="farewell", action="merge")
 ```
 
-- **Isolated where it matters.** Each implementer works on its own branch, `tandem/<name>`, in
+- **Isolated where it matters.** Each implementer works on its own branch, `intandem/<name>`, in
   a git worktree under the state root, outside the repository, with its own supervisor,
   journal and protected files. The planner's working tree stays clean.
 - **One wait for all of them.** `wait_any` returns as soon as any implementer finishes, blocks
@@ -169,8 +169,8 @@ land_implementer(name="farewell", action="merge")
 
 ## One process, one OpenCode
 
-Every task runs on a hub, so nothing sprawls. Under the MCP server, `tandem mcp` is the only
-tandem process, and `tandem serve` runs the same hub for a task started by hand:
+Every task runs on a hub, so nothing sprawls. Under the MCP server, `inTandem mcp` is the only
+inTandem process, and `inTandem serve` runs the same hub for a task started by hand:
 
 - **One FastAPI app, one uvicorn.** Each implementer's bridge is mounted at `/t/<task>` in a
   single app, beside an overview page at `/ui` that lists every implementer. A task's manifest
@@ -191,7 +191,7 @@ tandem process, and `tandem serve` runs the same hub for a task started by hand:
 ## Watch it in a browser
 
 Every tool reply carries a `dashboard` link, plus an `overview` link to the page that lists
-every implementer of the session. `tandem serve` prints its dashboard link on startup. The page
+every implementer of the session. `inTandem serve` prints its dashboard link on startup. The page
 shows what the implementer is doing and why `wait` would return right now, its latest
 messages, the result and changed files, spend, and a timeline of everything in the journal.
 Permission requests and questions appear with **Allow**/**Deny** and answer buttons, so the
@@ -208,44 +208,44 @@ else:
   see what is blocked, allow or deny it, and check on spend.
 - **Scripts and CI.** Exit codes carry the reason (see [Exit codes](#exit-codes)), and
   `--json` gives the raw response, so a shell loop can drive an implementer with no planner.
-- **Planners without MCP.** Anything that can run a shell command can use tandem.
-- **A supervisor of your own.** `tandem serve` runs one task on a hub of its own, with its own
+- **Planners without MCP.** Anything that can run a shell command can use inTandem.
+- **A supervisor of your own.** `inTandem serve` runs one task on a hub of its own, with its own
   OpenCode server, outside any planner session.
 
 Stepping in on a running implementer, whoever started it:
 
 ```bash
-tandem status                      # what it is doing, and why `wait` would return now
-tandem wait                        # blocks until something needs you
-tandem pending                     # what it is waiting on
-tandem allow                       # or: tandem deny --message "leave that file alone"
-tandem log                         # the journal
-tandem cost
+inTandem status                      # what it is doing, and why `wait` would return now
+inTandem wait                        # blocks until something needs you
+inTandem pending                     # what it is waiting on
+inTandem allow                       # or: inTandem deny --message "leave that file alone"
+inTandem log                         # the journal
+inTandem cost
 ```
 
 Running a task without MCP, from a script or a planner that shells out:
 
 ```bash
-tandem serve ~/work/my-task -m openrouter/qwen/qwen3-coder -p instruction.md
+inTandem serve ~/work/my-task -m openrouter/qwen/qwen3-coder -p instruction.md
 ```
 
 In another shell:
 
 ```bash
-tandem spec S-1 --file spec.md     # fresh session, spec delivered (-m/--agent: per spec)
-tandem wait                        # exit code says why it returned
-tandem result                      # the implementer's own verdict
-tandem diff                        # what it actually changed: check, don't trust
-tandem directive S-1 D-1 correct "Use the existing retry helper."
-tandem spec S-2 --file next.md     # requirements changed: new id, new session
-tandem finish
+inTandem spec S-1 --file spec.md     # fresh session, spec delivered (-m/--agent: per spec)
+inTandem wait                        # exit code says why it returned
+inTandem result                      # the implementer's own verdict
+inTandem diff                        # what it actually changed: check, don't trust
+inTandem directive S-1 D-1 correct "Use the existing retry helper."
+inTandem spec S-2 --file next.md     # requirements changed: new id, new session
+inTandem finish
 ```
 
 These verbs mirror the MCP tools one for one: `spec` is `submit_spec`, `directive` is
 `send_directive`, `allow`/`deny` are `reply_permission`, and so on.
 
-To watch the implementer work, `tandem attach` opens OpenCode's own TUI on the live session,
-and `tandem attach --web` prints a URL and login for OpenCode's web UI. Watch there, but steer
+To watch the implementer work, `inTandem attach` opens OpenCode's own TUI on the live session,
+and `inTandem attach --web` prints a URL and login for OpenCode's web UI. Watch there, but steer
 with `say` or `directive`: a prompt typed into OpenCode never reaches the journal.
 
 With one supervisor running, no flags are needed to find it. With several, pass `--task`
@@ -253,15 +253,15 @@ with a name prefix, the task directory, or the state directory.
 
 ## Exit codes
 
-`tandem wait` returns when the implementer needs attention, and its exit code says why, so a
+`inTandem wait` returns when the implementer needs attention, and its exit code says why, so a
 script can branch without parsing anything. The MCP `wait` tool returns the same `reason`
 with a `next_step`.
 
 | exit | reason | do this |
 |---|---|---|
-| 0 | `result` | review `tandem result --json`, then verify it yourself |
-| 0 | `turn_ended` | the turn ended without a result; read `tandem msg 3` |
-| 5 | `blocked` | `tandem pending`, then `allow`, `deny --message`, or `answer` |
+| 0 | `result` | review `inTandem result --json`, then verify it yourself |
+| 0 | `turn_ended` | the turn ended without a result; read `inTandem msg 3` |
+| 5 | `blocked` | `inTandem pending`, then `allow`, `deny --message`, or `answer` |
 | 8 | `reasoning_stall` | text, no tools, for 12 minutes: usually a contradiction in the spec |
 | 4 | `hung` | nothing for 5 minutes, or one tool silent for 12 |
 | 6 | `error` or `protected_violation` | provider error, or a protected file changed |
@@ -272,7 +272,7 @@ with a `next_step`.
 planner that calls it in a loop cannot miss a wakeup. A result is reported once the turn is
 over, not when the file lands, so the planner never reviews a moving target.
 
-[`skills/tandem-planner/SKILL.md`](skills/tandem-planner/SKILL.md) is the planner loop written
+[`skills/intandem-planner/SKILL.md`](skills/intandem-planner/SKILL.md) is the planner loop written
 as an Agent Skill for Claude Code or Codex.
 
 ## What it enforces
@@ -299,7 +299,7 @@ files are restored.
 **A result has to be fresh.** The implementer writes JSON to a path given in its prompt. It
 counts only if it names the active spec and was written after the latest prompt.
 
-**Delivery is idempotent.** Every prompt carries a marker. After a restart, tandem adopts the
+**Delivery is idempotent.** Every prompt carries a marker. After a restart, inTandem adopts the
 session it recorded and checks for the marker before sending anything again.
 
 ## Alerts
@@ -310,27 +310,27 @@ nobody needed trains people to ignore the channel. Every alert is recorded in
 `notifications.log`; delivery is opt-in:
 
 ```bash
-tandem serve ... --notify-cmd 'notify-send "tandem" "$TANDEM_NOTIFY"'
-tandem serve ... --ntfy-topic my-private-topic     # publishes summaries to ntfy.sh
+inTandem serve ... --notify-cmd 'notify-send "inTandem" "$INTANDEM_NOTIFY"'
+inTandem serve ... --ntfy-topic my-private-topic     # publishes summaries to ntfy.sh
 ```
 
-The command gets `$TANDEM_NOTIFY`, `$TANDEM_KIND`, `$TANDEM_EVENT` (JSON) and `$TANDEM_TASK`,
+The command gets `$INTANDEM_NOTIFY`, `$INTANDEM_KIND`, `$INTANDEM_EVENT` (JSON) and `$INTANDEM_TASK`,
 and is killed if it runs longer than 30 seconds.
 
 ## Configuration
 
-Every option of `tandem serve` can also come from the environment with a `TANDEM_` prefix:
+Every option of `inTandem serve` can also come from the environment with an `INTANDEM_` prefix:
 
 | variable | default | |
 |---|---|---|
-| `TANDEM_MODEL` | OpenCode's default | `provider/model` for the implementer |
-| `TANDEM_PROTECTED` | `[]` | JSON list of globs, e.g. `'["instruction.md","docs/*.md"]'` |
-| `TANDEM_NOTIFY_CMD`, `TANDEM_NTFY_TOPIC` | off | alert delivery |
-| `TANDEM_STALL_AFTER` | `720` | seconds of text without a tool call |
-| `TANDEM_QUIET_AFTER` | `300` | seconds with neither |
-| `TANDEM_STATE_ROOT` | `$XDG_STATE_HOME/tandem` | where task state lives |
-| `TANDEM_OPENCODE_BIN` | `opencode` | the OpenCode binary |
-| `TANDEM_WORKDIR` | the MCP server's working directory | the project `tandem mcp` acts on by default |
+| `INTANDEM_MODEL` | OpenCode's default | `provider/model` for the implementer |
+| `INTANDEM_PROTECTED` | `[]` | JSON list of globs, e.g. `'["instruction.md","docs/*.md"]'` |
+| `INTANDEM_NOTIFY_CMD`, `INTANDEM_NTFY_TOPIC` | off | alert delivery |
+| `INTANDEM_STALL_AFTER` | `720` | seconds of text without a tool call |
+| `INTANDEM_QUIET_AFTER` | `300` | seconds with neither |
+| `INTANDEM_STATE_ROOT` | `$XDG_STATE_HOME/intandem` | where task state lives |
+| `INTANDEM_OPENCODE_BIN` | `opencode` | the OpenCode binary |
+| `INTANDEM_WORKDIR` | the MCP server's working directory | the project `inTandem mcp` acts on by default |
 
 ## On disk
 
@@ -378,7 +378,7 @@ guard, and a supervisor restart mid-spec. The MCP tools are tested against a moc
   supervisor that shares a process with what it supervises cannot restart it when it wedges.
   One OpenCode is shared by every task on a hub, and replaced if it dies.
 - **A task is not a server.** `open_task` builds a supervisor and its bridge app with no server
-  of its own, and the hub mounts it beside the others, whether `tandem mcp` or `tandem serve`
+  of its own, and the hub mounts it beside the others, whether `inTandem mcp` or `inTandem serve`
   runs that hub.
 - **FastAPI only where there is a server.** The OpenCode client is httpx, the supervisor is
   plain asyncio, and the CLI is Typer over the same pydantic models the bridge serves.
@@ -391,7 +391,7 @@ guard, and a supervisor restart mid-spec. The MCP tools are tested against a moc
   supervisor by directory, start one on the session's hub if there is none, and call the same
   bridge endpoints as the CLI. Restarting the planner stops its implementers but loses nothing:
   each resumes from its state file on next use.
-- **The CLI came first.** Any agent can run a shell command, so tandem began as a CLI a
+- **The CLI came first.** Any agent can run a shell command, so inTandem began as a CLI a
   planner shelled out to, with exit codes as its interface. Structured tools suited planners
   better, so MCP took over that role; the CLI stayed because a human in a terminal, and a
   script in CI, still need a way in.
@@ -405,4 +405,4 @@ guard, and a supervisor restart mid-spec. The MCP tools are tested against a moc
 - `list_models` shows what OpenCode lists, not what an account accepts: a ChatGPT login
   refuses some OpenAI models, and that surfaces as `error` from `wait`.
 - `wait` reasons are heuristics over the event stream. The thresholds are configurable,
-  and `tandem status` shows the numbers behind each call.
+  and `inTandem status` shows the numbers behind each call.

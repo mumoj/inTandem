@@ -7,7 +7,7 @@ Only the model's choices are scripted.
 
 A script maps a marker to a list of steps. Each request is answered from the
 list whose marker appears in the most recent user message that has one (a
-spec prompt carries ``TANDEM_SPEC_ID: S-1``, a directive ``TANDEM_DIRECTIVE_ID:
+spec prompt carries ``INTANDEM_SPEC_ID: S-1``, a directive ``INTANDEM_DIRECTIVE_ID:
 D-1``), at the index given by how many assistant messages follow that message.
 Counting from the prompt rather than from the start of the session keeps the
 script on track when a turn is aborted part way through.
@@ -44,7 +44,7 @@ Step = ToolCall | Reply
 @dataclass
 class Script:
     steps: dict[str, list[Step]]
-    """Steps per marker, e.g. ``{"TANDEM_SPEC_ID: S-1": [...]}``."""
+    """Steps per marker, e.g. ``{"INTANDEM_SPEC_ID: S-1": [...]}``."""
     requests: list[dict[str, Any]] = field(default_factory=list[dict[str, Any]])
 
     def next_step(self, messages: list[dict[str, Any]]) -> Step:
@@ -81,7 +81,7 @@ def _search(messages: list[dict[str, Any]], pattern: str) -> str:
 
 
 def result_path(messages: list[dict[str, Any]]) -> str:
-    """The result file path tandem put in the spec prompt."""
+    """The result file path inTandem put in the spec prompt."""
     return _search(messages, r"writing JSON to (\S+?):")
 
 

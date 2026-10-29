@@ -13,9 +13,9 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Any
 
-from tandem.opencode.client import NotFoundError, OpenCodeError
-from tandem.opencode.events import Event
-from tandem.opencode.models import (
+from intandem.opencode.client import NotFoundError, OpenCodeError
+from intandem.opencode.events import Event
+from intandem.opencode.models import (
     FileDiff,
     Health,
     Message,

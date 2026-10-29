@@ -9,10 +9,10 @@ from pathlib import Path
 import httpx
 import pytest
 
-from tandem.bridge.manifest import Manifest
-from tandem.config import TaskPaths
-from tandem.hub import Hub
-from tandem.opencode.host import SharedHost
+from intandem.bridge.manifest import Manifest
+from intandem.config import TaskPaths
+from intandem.hub import Hub
+from intandem.opencode.host import SharedHost
 from tests.test_e2e import OPENCODE, requires_opencode
 
 pytestmark = [pytest.mark.e2e, requires_opencode]
@@ -124,8 +124,8 @@ async def test_closing_the_hub_stops_its_tasks_and_opencode(tmp_path: Path) -> N
 async def test_a_task_without_a_model_falls_back_to_the_environment(
     hub: Hub, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("TANDEM_MODEL", "openai/from-env")
-    monkeypatch.setenv("TANDEM_PROTECTED", '["instruction.md"]')
+    monkeypatch.setenv("INTANDEM_MODEL", "openai/from-env")
+    monkeypatch.setenv("INTANDEM_PROTECTED", '["instruction.md"]')
     manifest = await hub.start_task(task_dir(tmp_path, "alpha"))
     async with bridge(manifest) as client:
         status = (await client.get("/status")).json()

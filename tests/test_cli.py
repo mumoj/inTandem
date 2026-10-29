@@ -11,8 +11,8 @@ import respx
 from pydantic import SecretStr
 from typer.testing import CliRunner
 
-from tandem.bridge.manifest import Manifest
-from tandem.cli import app
+from intandem.bridge.manifest import Manifest
+from intandem.cli import app
 
 URL = "http://127.0.0.1:41999"
 runner = CliRunner()
@@ -188,7 +188,7 @@ def test_bridge_errors_are_one_line(state_root: Path) -> None:
     respx.post(f"{URL}/spec").respond(409, json={"detail": "Spec ID S-1 is immutable"})
     code, output = invoke(state_root, "spec", "S-1", "new", "text")
     assert code == 1
-    assert output.strip() == "tandem: 409: Spec ID S-1 is immutable"
+    assert output.strip() == "inTandem: 409: Spec ID S-1 is immutable"
 
 
 def test_no_supervisor_is_exit_3(tmp_path: Path) -> None:

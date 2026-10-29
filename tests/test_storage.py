@@ -10,13 +10,13 @@ from pathlib import Path
 import pytest
 from pydantic import SecretStr, ValidationError
 
-from tandem.bridge.manifest import Manifest
-from tandem.config import Settings, TaskPaths
-from tandem.opencode.events import Event, StreamRecorder
-from tandem.opencode.host import reap_orphans
-from tandem.supervisor.journal import Journal
-from tandem.supervisor.protected import MISSING, ProtectedFiles
-from tandem.supervisor.state import (
+from intandem.bridge.manifest import Manifest
+from intandem.config import Settings, TaskPaths
+from intandem.opencode.events import Event, StreamRecorder
+from intandem.opencode.host import reap_orphans
+from intandem.supervisor.journal import Journal
+from intandem.supervisor.protected import MISSING, ProtectedFiles
+from intandem.supervisor.state import (
     SpecRecord,
     StateError,
     StateStore,
@@ -123,7 +123,7 @@ def test_recorder_stubs_oversized_lines(tmp_path: Path) -> None:
     lines = path.read_text().splitlines()
     assert lines[0] == 'data: {"type":"session.idle","properties":{}}'
     stub = json.loads(lines[1].removeprefix("data: "))
-    assert stub == {"type": "message.updated", "tandemDropped": True, "bytes": len(huge)}
+    assert stub == {"type": "message.updated", "inTandemDropped": True, "bytes": len(huge)}
     assert recorder.dropped == 1
     assert mode(path) == 0o600
 

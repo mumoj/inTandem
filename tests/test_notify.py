@@ -5,7 +5,7 @@ from pathlib import Path
 import httpx
 import respx
 
-from tandem.notify import Alert, Notifier
+from intandem.notify import Alert, Notifier
 from tests.fakes import event
 
 
@@ -44,7 +44,7 @@ async def test_the_command_gets_the_summary_in_its_environment(tmp_path: Path) -
         log_path=tmp_path / "notifications.log",
         task="demo",
         state_dir=tmp_path,
-        command=f'printf "%s|%s|%s" "$TANDEM_KIND" "$TANDEM_TASK" "$TANDEM_NOTIFY" > {out}',
+        command=f'printf "%s|%s|%s" "$INTANDEM_KIND" "$INTANDEM_TASK" "$INTANDEM_NOTIFY" > {out}',
     )
     notifier.escalate(Alert("permission.asked", "per_1 wants edit", "ses_1", {"type": "x"}))
     await notifier.drain()
@@ -94,4 +94,4 @@ async def test_ntfy_is_opt_in(tmp_path: Path) -> None:
         await loud.drain()
 
     assert route.calls.last.request.content == b"per_1 wants edit"
-    assert route.calls.last.request.headers["title"] == "tandem demo: blocked"
+    assert route.calls.last.request.headers["title"] == "inTandem demo: blocked"

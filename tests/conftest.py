@@ -5,13 +5,13 @@ from pathlib import Path
 
 import pytest
 
-from tandem.config import TaskPaths
-from tandem.notify import Notifier
-from tandem.supervisor.activity import ActivityTracker
-from tandem.supervisor.journal import Journal
-from tandem.supervisor.protected import ProtectedFiles
-from tandem.supervisor.state import StateStore
-from tandem.supervisor.supervisor import Supervisor
+from intandem.config import TaskPaths
+from intandem.notify import Notifier
+from intandem.supervisor.activity import ActivityTracker
+from intandem.supervisor.journal import Journal
+from intandem.supervisor.protected import ProtectedFiles
+from intandem.supervisor.state import StateStore
+from intandem.supervisor.supervisor import Supervisor
 from tests.fakes import FakeClock, FakeOpenCode
 
 SupervisorFactory = Callable[..., Supervisor]

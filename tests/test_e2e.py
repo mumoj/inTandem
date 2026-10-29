@@ -1,13 +1,13 @@
-"""End to end: tandem driving a real ``opencode serve`` with a scripted model.
+"""End to end: inTandem driving a real ``opencode serve`` with a scripted model.
 
 Nothing here is faked except the model's choices. The OpenCode binary, its
 permission system and its event stream are real, which is the test the
 in-memory fake cannot stand in for: a client stubbed in tests can pass locally
 and still deadlock against the real service.
 
-Needs OpenCode 1.x: set ``TANDEM_TEST_OPENCODE`` to the binary, or have
+Needs OpenCode 1.x: set ``INTANDEM_TEST_OPENCODE`` to the binary, or have
 ``opencode`` on PATH. The first run downloads OpenCode's OpenAI-compatible
-provider package into ``TANDEM_TEST_CACHE`` (default ``~/.cache/tandem-test``).
+provider package into ``INTANDEM_TEST_CACHE`` (default ``~/.cache/intandem-test``).
 """
 
 from __future__ import annotations
@@ -26,17 +26,17 @@ import httpx
 import pytest
 import uvicorn
 
-from tandem.bridge.manifest import Manifest
-from tandem.config import Settings, TaskPaths
-from tandem.hub import serve
-from tandem.opencode.server import Version
+from intandem.bridge.manifest import Manifest
+from intandem.config import Settings, TaskPaths
+from intandem.hub import serve
+from intandem.opencode.server import Version
 from tests.scripted_llm import Reply, Script, ToolCall, build_app, result_path
 
 pytestmark = pytest.mark.e2e
 
 
 def _opencode() -> str | None:
-    binary = os.environ.get("TANDEM_TEST_OPENCODE") or shutil.which("opencode")
+    binary = os.environ.get("INTANDEM_TEST_OPENCODE") or shutil.which("opencode")
     if not binary:
         return None
     output = subprocess.run([binary, "--version"], capture_output=True, text=True, check=False)
@@ -67,7 +67,7 @@ def write_result(spec_id: str, summary: str) -> Callable[[list[dict[str, Any]]],
 
 
 class Harness:
-    """One task: a scripted model, a tandem supervisor, and a client for its bridge."""
+    """One task: a scripted model, a inTandem supervisor, and a client for its bridge."""
 
     def __init__(self, tmp_path: Path, script: Script) -> None:
         assert OPENCODE is not None
@@ -161,7 +161,7 @@ async def harness(
             }
         )
     )
-    cache = Path(os.environ.get("TANDEM_TEST_CACHE", Path.home() / ".cache" / "tandem-test"))
+    cache = Path(os.environ.get("INTANDEM_TEST_CACHE", Path.home() / ".cache" / "intandem-test"))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
     monkeypatch.setenv("XDG_CACHE_HOME", str(cache))
@@ -180,7 +180,7 @@ async def harness(
 
 GREETING = Script(
     {
-        "TANDEM_SPEC_ID: S-1": [
+        "INTANDEM_SPEC_ID: S-1": [
             ToolCall("write", {"filePath": "hello.txt", "content": "hi\n"}, say="Writing it."),
             ToolCall(
                 "edit",
@@ -246,18 +246,18 @@ QUESTION = {
 
 REVIEW_LOOP = Script(
     {
-        "TANDEM_SPEC_ID: S-1": [
+        "INTANDEM_SPEC_ID: S-1": [
             ToolCall("question", QUESTION),
             ToolCall("write", {"filePath": "hello.txt", "content": "hey\n"}),
             ToolCall("write", write_result("S-1", "informal greeting")),
             Reply("Done."),
         ],
-        "TANDEM_DIRECTIVE_ID: D-1": [
+        "INTANDEM_DIRECTIVE_ID: D-1": [
             ToolCall("write", {"filePath": "hello.txt", "content": "salut\n"}),
             ToolCall("write", write_result("S-1", "now in French")),
             Reply("Corrected."),
         ],
-        "TANDEM_SPEC_ID: S-2": [
+        "INTANDEM_SPEC_ID: S-2": [
             ToolCall("write", {"filePath": "bye.txt", "content": "bye\n"}),
             ToolCall("write", write_result("S-2", "wrote bye.txt")),
             Reply("Done."),
@@ -308,7 +308,7 @@ async def test_questions_corrections_and_a_second_spec(harness: Harness) -> None
 
 TAMPER = Script(
     {
-        "TANDEM_SPEC_ID: S-1": [
+        "INTANDEM_SPEC_ID: S-1": [
             # A shell redirect is not an edit, so no permission rule sees it.
             ToolCall(
                 "bash",
@@ -316,7 +316,7 @@ TAMPER = Script(
             ),
             Reply("Changed the instructions."),
         ],
-        "TANDEM_DIRECTIVE_ID: D-1": [
+        "INTANDEM_DIRECTIVE_ID: D-1": [
             ToolCall("write", write_result("S-1", "left instruction.md alone")),
             Reply("Done."),
         ],

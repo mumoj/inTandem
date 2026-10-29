@@ -8,17 +8,17 @@ from pathlib import Path
 
 import pytest
 
-from tandem.config import TaskPaths
-from tandem.opencode.models import PermissionAction
-from tandem.supervisor.prompts import directive_marker, spec_marker
-from tandem.supervisor.state import (
+from intandem.config import TaskPaths
+from intandem.opencode.models import PermissionAction
+from intandem.supervisor.prompts import directive_marker, spec_marker
+from intandem.supervisor.state import (
     DirectiveAction,
     SpecRecord,
     SpecStatus,
     StateStore,
     SupervisorState,
 )
-from tandem.supervisor.supervisor import (
+from intandem.supervisor.supervisor import (
     ConflictError,
     NoActiveSpecError,
     Supervisor,
@@ -394,7 +394,7 @@ async def test_state_from_before_patterns_were_kept_is_checked_entry_by_entry(
 ) -> None:
     first = make_supervisor(protected=("instruction.md", "hint.md"))
     record = await first.submit_spec("S-1", "Add a greeting.")
-    # What a state file written by an older tandem holds: a baseline, no patterns,
+    # What a state file written by an older inTandem holds: a baseline, no patterns,
     # and the false violation the old comparison raised.
     record.protected_patterns = None
     record.status = SpecStatus.PROTECTED_VIOLATION
