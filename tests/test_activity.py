@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from tandem.opencode.events import Event
-from tandem.supervisor.activity import Activity, ActivityTracker
+from intandem.opencode.events import Event
+from intandem.supervisor.activity import Activity, ActivityTracker
 from tests.fakes import FakeClock, event
 
 SESSION = "ses_1"

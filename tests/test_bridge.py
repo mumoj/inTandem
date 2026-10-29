@@ -7,8 +7,8 @@ from collections.abc import AsyncIterator
 import httpx
 import pytest
 
-from tandem.bridge.app import OpenCodeLogin, create_app
-from tandem.supervisor.supervisor import Supervisor
+from intandem.bridge.app import OpenCodeLogin, create_app
+from intandem.supervisor.supervisor import Supervisor
 from tests.fakes import FakeOpenCode
 
 TOKEN = "t0ken"

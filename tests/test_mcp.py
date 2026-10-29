@@ -14,9 +14,9 @@ from mcp.server.mcpserver import Context
 from mcp.server.mcpserver.exceptions import ToolError
 from pydantic import SecretStr
 
-from tandem import mcp_server, worktrees
-from tandem.bridge.manifest import Manifest
-from tandem.config import TaskPaths
+from intandem import mcp_server, worktrees
+from intandem.bridge.manifest import Manifest
+from intandem.config import TaskPaths
 
 URL = "http://127.0.0.1:41999"
 
@@ -48,8 +48,8 @@ def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     state_root = tmp_path / "state"
     task_dir = (tmp_path / "demo").resolve()
     task_dir.mkdir()
-    monkeypatch.setenv("TANDEM_STATE_ROOT", str(state_root))
-    monkeypatch.setenv("TANDEM_WORKDIR", str(task_dir))
+    monkeypatch.setenv("INTANDEM_STATE_ROOT", str(state_root))
+    monkeypatch.setenv("INTANDEM_WORKDIR", str(task_dir))
     paths = TaskPaths.for_task(state_root, task_dir)
     Manifest(
         host="127.0.0.1",
@@ -111,8 +111,8 @@ def test_bridge_errors_become_tool_errors(project: Path) -> None:
 
 
 def test_nothing_running_says_how_to_start(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("TANDEM_STATE_ROOT", str(tmp_path / "state"))
-    monkeypatch.setenv("TANDEM_WORKDIR", str(tmp_path))
+    monkeypatch.setenv("INTANDEM_STATE_ROOT", str(tmp_path / "state"))
+    monkeypatch.setenv("INTANDEM_WORKDIR", str(tmp_path))
     with pytest.raises(ToolError, match="submit_spec starts one"):
         mcp_server.status()
 
@@ -155,8 +155,8 @@ def repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     (root / "app.py").write_text("x = 1\n")
     worktrees.git(root, "add", "-A")
     worktrees.git(root, "commit", "-qm", "init")
-    monkeypatch.setenv("TANDEM_STATE_ROOT", str(tmp_path / "state"))
-    monkeypatch.setenv("TANDEM_WORKDIR", str(root))
+    monkeypatch.setenv("INTANDEM_STATE_ROOT", str(tmp_path / "state"))
+    monkeypatch.setenv("INTANDEM_WORKDIR", str(root))
     return root
 
 
@@ -252,7 +252,7 @@ def test_spawn_creates_a_worktree_starts_it_and_submits_the_spec(
 
     def fake_spawn(task_dir: Path, model: str | None, protect: list[str] | None) -> Manifest:
         started.append(task_dir)
-        return running(worktrees.Worktree("alpha", task_dir, "tandem/alpha"), 42001)
+        return running(worktrees.Worktree("alpha", task_dir, "intandem/alpha"), 42001)
 
     monkeypatch.setattr(mcp_server, "_spawn", fake_spawn)
     route = respx.post("http://127.0.0.1:42001/spec").respond(
@@ -263,7 +263,7 @@ def test_spawn_creates_a_worktree_starts_it_and_submits_the_spec(
 
     [tree] = worktrees.list_worktrees(repo)
     assert started == [tree.path]
-    assert out["branch"] == "tandem/alpha"
+    assert out["branch"] == "intandem/alpha"
     assert out["worktree"] == str(tree.path)
     assert out["note"] == ""
     assert json.loads(route.calls.last.request.content)["model"] == "openai/m"

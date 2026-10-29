@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from tandem import worktrees
-from tandem.worktrees import GitError, git
+from intandem import worktrees
+from intandem.worktrees import GitError, git
 
 
 @pytest.fixture
@@ -35,7 +35,7 @@ def test_a_worktree_lives_outside_the_repository_and_retrying_reuses_it(
     again = worktrees.create_worktree(repo, state_root, "farewell", None)
 
     assert again == first
-    assert first.branch == "tandem/farewell"
+    assert first.branch == "intandem/farewell"
     assert first.path.is_relative_to(state_root)
     assert (first.path / "greetings.py").is_file()
     assert git(repo, "status", "--porcelain") == ""
@@ -50,7 +50,7 @@ def test_names_are_safe_branch_and_directory_names(repo: Path, state_root: Path,
 
 
 def test_a_leftover_branch_is_not_silently_reused(repo: Path, state_root: Path) -> None:
-    git(repo, "branch", "tandem/old")
+    git(repo, "branch", "intandem/old")
     with pytest.raises(GitError, match="exists without a worktree"):
         worktrees.create_worktree(repo, state_root, "old", None)
 
@@ -78,13 +78,13 @@ def test_merge_brings_uncommitted_work_into_the_current_branch(
     (tree.path / "farewell.py").write_text("def farewell(name):\n    return name\n")
 
     assert worktrees.commit_all(tree, "Add farewell")
-    assert worktrees.merge(repo, tree, "Merge tandem/farewell") == "main"
+    assert worktrees.merge(repo, tree, "Merge intandem/farewell") == "main"
     worktrees.remove(repo, tree)
 
     assert (repo / "farewell.py").is_file()
     assert worktrees.list_worktrees(repo) == []
     assert not tree.path.exists()
-    assert git(repo, "branch", "--list", "tandem/farewell") == ""
+    assert git(repo, "branch", "--list", "intandem/farewell") == ""
 
 
 def test_nothing_to_commit_is_not_an_error(repo: Path, state_root: Path) -> None:
@@ -102,7 +102,7 @@ def test_a_conflicting_merge_is_aborted_and_leaves_the_repository_clean(
     git(repo, "commit", "-qam", "ours")
 
     with pytest.raises(GitError, match="aborted"):
-        worktrees.merge(repo, tree, "Merge tandem/clash")
+        worktrees.merge(repo, tree, "Merge intandem/clash")
 
     assert git(repo, "status", "--porcelain") == ""
     assert (repo / "greetings.py").read_text() == "two\n"

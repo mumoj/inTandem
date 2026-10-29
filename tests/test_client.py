@@ -9,10 +9,10 @@ import httpx
 import pytest
 import respx
 
-from tandem.opencode.client import NotFoundError, OpenCodeClient, OpenCodeError
-from tandem.opencode.events import Event
-from tandem.opencode.models import ModelRef, PermissionAction, PermissionRule
-from tandem.opencode.server import UnsupportedVersionError, Version, require_supported
+from intandem.opencode.client import NotFoundError, OpenCodeClient, OpenCodeError
+from intandem.opencode.events import Event
+from intandem.opencode.models import ModelRef, PermissionAction, PermissionRule
+from intandem.opencode.server import UnsupportedVersionError, Version, require_supported
 
 BASE = "http://127.0.0.1:4096"
 
