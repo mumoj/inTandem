@@ -25,7 +25,7 @@ flowchart LR
     browser["You, in a browser"] -->|dashboard /ui| bridge
     mcp -->|bearer token, loopback| bridge["Bridge<br/>FastAPI"]
     cli -->|bearer token, loopback| bridge
-    subgraph host ["tandem serve: one process, one event loop"]
+    subgraph host ["tandem hub: one process, one event loop"]
         bridge --> sup["Supervisor"]
         pump["Event pump"] --> sup
         monitor["Monitor"] --> sup
@@ -169,23 +169,24 @@ land_implementer(name="farewell", action="merge")
 
 ## One process, one OpenCode
 
-Under the MCP server, nothing sprawls. `tandem mcp` is the only tandem process:
+Every task runs on a hub, so nothing sprawls. Under the MCP server, `tandem mcp` is the only
+tandem process, and `tandem serve` runs the same hub for a task started by hand:
 
 - **One FastAPI app, one uvicorn.** Each implementer's bridge is mounted at `/t/<task>` in a
   single app, beside an overview page at `/ui` that lists every implementer. A task's manifest
-  points at its mount, so the CLI and the tools reach it exactly as they reach a standalone one.
+  points at its mount, so the CLI and the tools find every task the same way.
 - **One OpenCode server.** Every implementer is a tenant of it, scoped to its own directory
   through OpenCode's `directory` parameter and reading its own events from the server-wide
   stream. It starts when the planner connects, so its startup is paid once per session.
 - **Subagents stay guarded.** A server-wide config cannot know each implementer's protected
   files, so when a subagent's session appears, its supervisor patches that session to deny
-  edits to them. The content hash still backs this up.
-- **Nothing outlives the session.** On Linux the kernel stops OpenCode if `tandem mcp` dies
-  without cleaning up; elsewhere, the next session stops any server its predecessor left.
-
-`TANDEM_OPENCODE_MODE=isolated` restores one `tandem serve` process and one OpenCode per
-implementer, each outliving the planner, for when one wedged server must not stall the rest.
-Plain `tandem serve` from the CLI is always isolated.
+  edits to them. An edit made before the patch lands is caught by the content hash, which
+  stops the spec.
+- **Nothing outlives the session.** On Linux the kernel stops OpenCode if the hub's process
+  dies without cleaning up, even on `kill -9`; elsewhere, the next hub stops any server its
+  predecessor left.
+- **One server, one point of failure.** A wedged OpenCode stalls every implementer on it. The
+  hub replaces a server that dies, and each task resumes from its state file.
 
 ## Watch it in a browser
 
@@ -208,8 +209,8 @@ else:
 - **Scripts and CI.** Exit codes carry the reason (see [Exit codes](#exit-codes)), and
   `--json` gives the raw response, so a shell loop can drive an implementer with no planner.
 - **Planners without MCP.** Anything that can run a shell command can use tandem.
-- **A standalone supervisor.** `tandem serve` runs one task in its own process, outside any
-  planner session.
+- **A supervisor of your own.** `tandem serve` runs one task on a hub of its own, with its own
+  OpenCode server, outside any planner session.
 
 Stepping in on a running implementer, whoever started it:
 
@@ -286,8 +287,9 @@ its spec and ended a later turn before the implementer had read its new instruct
 **Protected files are enforced twice.** A permission rule stops an edit and waits for a human
 with the diff attached. A content hash, checked while the spec runs, catches the edits that
 arrive another way, such as a shell redirect. Either one aborts the session. The rule is set
-both on the spec's session and in the config of the OpenCode server tandem starts, because a
-subagent's session does not inherit the spec's rules.
+on the spec's session, and patched onto each subagent's session as it appears, because a
+subagent's session does not inherit the spec's rules. A subagent edit that beats the patch is
+left to the hash.
 
 **A restart keeps protection honest.** Each spec's baseline records the globs it was taken
 under. Restarting with a different protect list checks the old files against the old baseline
@@ -329,7 +331,6 @@ Every option of `tandem serve` can also come from the environment with a `TANDEM
 | `TANDEM_STATE_ROOT` | `$XDG_STATE_HOME/tandem` | where task state lives |
 | `TANDEM_OPENCODE_BIN` | `opencode` | the OpenCode binary |
 | `TANDEM_WORKDIR` | the MCP server's working directory | the project `tandem mcp` acts on by default |
-| `TANDEM_OPENCODE_MODE` | `shared` | `isolated`: one process and OpenCode per implementer |
 
 ## On disk
 
@@ -343,8 +344,6 @@ notifications.log    every alert
 manifest.json        bridge URL and token, OpenCode login, 0600, removed on clean exit
 results/<spec>.json  the implementer's results
 sessions/<spec>/     final messages and totals per spec
-opencode.log         the OpenCode server's own output
-serve.log            the supervisor's own output, when started in isolated mode
 ```
 
 Beside the tasks, `hosts/` holds the shared OpenCode server's log and a record of it, which is
@@ -372,14 +371,15 @@ guard, and a supervisor restart mid-spec. The MCP tools are tested against a moc
 
 ## Design notes
 
-- **One process, one event loop, one task group.** The bridge, the event pump and the monitor
-  run under one `asyncio.TaskGroup`; if one dies the rest stop with it, and an exit stack
-  stops OpenCode on the way out.
+- **One process, one event loop, one task group per task.** A task's event pump, monitor and
+  host watch run under one `asyncio.TaskGroup`; if one dies the rest stop with it, and an exit
+  stack frees its OpenCode instance on the way out. One task failing leaves the others running.
 - **OpenCode runs as a separate process.** OpenCode's SDK can host it in-process, but a
   supervisor that shares a process with what it supervises cannot restart it when it wedges.
-  Under the MCP server, one OpenCode is shared, and replaced if it dies.
+  One OpenCode is shared by every task on a hub, and replaced if it dies.
 - **A task is not a server.** `open_task` builds a supervisor and its bridge app with no server
-  of its own, so the same task runs behind `tandem serve`'s uvicorn or mounted in the hub's.
+  of its own, and the hub mounts it beside the others, whether `tandem mcp` or `tandem serve`
+  runs that hub.
 - **FastAPI only where there is a server.** The OpenCode client is httpx, the supervisor is
   plain asyncio, and the CLI is Typer over the same pydantic models the bridge serves.
 - **`OpenCodeAPI` is a protocol.** The supervisor never sees HTTP, so the unit tests use an
@@ -387,9 +387,10 @@ guard, and a supervisor restart mid-spec. The MCP tools are tested against a moc
 - **Plain files, not a database.** The planner reads the journal with `grep`.
 - **Git is the registry.** Parallel implementers are found from `git worktree list`, so there
   is no second record of them that could disagree with the repository.
-- **The MCP server is a thin client.** `tandem mcp` holds no state: it finds a supervisor by
-  directory, starts one detached if there is none, and calls the same bridge endpoints as the
-  CLI. Restarting the planner loses nothing.
+- **The MCP tools are a thin client.** They keep no state of their own: they find a
+  supervisor by directory, start one on the session's hub if there is none, and call the same
+  bridge endpoints as the CLI. Restarting the planner stops its implementers but loses nothing:
+  each resumes from its state file on next use.
 - **The CLI came first.** Any agent can run a shell command, so tandem began as a CLI a
   planner shelled out to, with exit codes as its interface. Structured tools suited planners
   better, so MCP took over that role; the CLI stayed because a human in a terminal, and a

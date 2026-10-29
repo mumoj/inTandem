@@ -167,8 +167,11 @@ def serve(
     opencode_bin: Annotated[str | None, typer.Option(help="Default: opencode on PATH.")] = None,
     verbose: Annotated[bool, typer.Option("--verbose", "-v")] = False,
 ) -> None:
-    """Run the supervisor for TASK_DIR until `tandem finish` or Ctrl-C."""
-    from tandem.runtime import run  # deferred: client commands should start fast
+    """Run the supervisor for TASK_DIR until `tandem finish` or Ctrl-C.
+
+    It runs on a hub of its own with one OpenCode server, as under `tandem mcp`.
+    """
+    from tandem.hub import serve as serve_hub  # deferred: client commands should start fast
 
     logging.basicConfig(
         level=logging.DEBUG if verbose else logging.INFO,
@@ -206,7 +209,7 @@ def serve(
         )
 
     try:
-        asyncio.run(run(settings, ready=ready))
+        asyncio.run(serve_hub(settings, ready=ready))
     except (UnsupportedVersionError, FileNotFoundError, RuntimeError) as exc:
         _fail(CliError(str(exc)))
     except ExceptionGroup as group:

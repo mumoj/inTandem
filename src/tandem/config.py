@@ -24,7 +24,7 @@ def default_state_root() -> Path:
 
 
 class Settings(BaseSettings):
-    """Everything ``tandem serve`` needs to run one task."""
+    """Everything one task needs, and how ``tandem serve`` starts its hub."""
 
     model_config = SettingsConfigDict(env_prefix="TANDEM_", extra="ignore")
 
@@ -38,12 +38,15 @@ class Settings(BaseSettings):
     """Glob patterns, relative to the task, that the implementer must not edit."""
 
     opencode_bin: str = "opencode"
+    """The binary ``tandem serve`` starts its shared OpenCode server from."""
     opencode_port: int = 0
+    """Where ``tandem serve`` starts its shared OpenCode server. 0: a free port."""
     opencode_url: str | None = None
-    """An ``opencode serve`` shared with other tasks. ``None`` starts one of our own."""
+    """The shared ``opencode serve`` this task attaches to. Set by the hub."""
     opencode_password: SecretStr | None = None
-    """The shared server's password. Comes from the environment, never argv."""
+    """The shared server's password. Set by the hub, never taken from argv."""
     bridge_port: int = 0
+    """Where ``tandem serve`` listens. 0: a free port."""
     state_root: Path = Field(default_factory=default_state_root)
 
     notify_cmd: str | None = None
@@ -127,10 +130,6 @@ class TaskPaths:
     @property
     def notifications(self) -> Path:
         return self.root / "notifications.log"
-
-    @property
-    def opencode_log(self) -> Path:
-        return self.root / "opencode.log"
 
     @property
     def lock(self) -> Path:

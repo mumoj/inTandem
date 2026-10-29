@@ -12,12 +12,7 @@ import respx
 from tandem.opencode.client import NotFoundError, OpenCodeClient, OpenCodeError
 from tandem.opencode.events import Event
 from tandem.opencode.models import ModelRef, PermissionAction, PermissionRule
-from tandem.opencode.server import (
-    UnsupportedVersionError,
-    Version,
-    permission_config,
-    require_supported,
-)
+from tandem.opencode.server import UnsupportedVersionError, Version, require_supported
 
 BASE = "http://127.0.0.1:4096"
 
@@ -59,22 +54,6 @@ async def test_prompt_can_name_an_agent(client: OpenCodeClient) -> None:
     await client.prompt("ses_1", "hello", None, "plan")
     body = json.loads(route.calls.last.request.content)
     assert body == {"parts": [{"type": "text", "text": "hello"}], "agent": "plan"}
-
-
-def test_protected_files_reach_every_agent_through_the_config() -> None:
-    assert json.loads(permission_config(None, ("instruction.md",))) == {
-        "edit": {"instruction.md": "ask"}
-    }
-    # The user's own settings survive, a plain action becomes the catch-all rule,
-    # and protection wins over anything they said about the same file.
-    mine = json.dumps({"bash": "ask", "edit": "allow"})
-    assert json.loads(permission_config(mine, ("a.md",))) == {
-        "bash": "ask",
-        "edit": {"*": "allow", "a.md": "ask"},
-    }
-    mine = json.dumps({"edit": {"a.md": "allow", "b.md": "deny"}})
-    assert json.loads(permission_config(mine, ("a.md",)))["edit"] == {"a.md": "ask", "b.md": "deny"}
-    assert json.loads(permission_config("not json", ("a.md",))) == {"edit": {"a.md": "ask"}}
 
 
 @respx.mock
