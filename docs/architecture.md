@@ -2,32 +2,8 @@
 
 <p align="center">
   <img src="architecture.svg" width="1000"
-       alt="Animated architecture: one spec from planner to result, including a permission request denied from a phone">
+       alt="The planner, terminal and browser all call the bridge inside the inTandem hub. The bridge calls the supervisor, which prompts opencode serve. OpenCode calls the model provider and edits your working tree, and streams events back to the event pump. The monitor and host watch run alongside, and the supervisor writes state to disk and sends alerts.">
 </p>
-
-<details>
-<summary>Static diagram</summary>
-
-```mermaid
-flowchart LR
-    planner["Planner<br/>Claude Code / Codex"] -->|MCP stdio| mcp["inTandem mcp"]
-    phone["You, over SSH"] --> cli["inTandem CLI"]
-    browser["You, in a browser"] -->|dashboard /ui| bridge
-    mcp -->|bearer token, loopback| bridge["Bridge<br/>FastAPI"]
-    cli -->|bearer token, loopback| bridge
-    subgraph host ["inTandem hub: one process, one event loop"]
-        bridge --> sup["Supervisor"]
-        pump["Event pump"] --> sup
-        monitor["Monitor"] --> sup
-    end
-    sup --> oc["opencode serve<br/>127.0.0.1, Basic auth"]
-    oc -->|SSE /event| pump
-    sup --> alerts["Alerts<br/>command / ntfy"]
-    oc --> model["Model provider"]
-    oc --> tree["Task working tree"]
-```
-
-</details>
 
 The planner and a human drive the same bridge, so anything the planner can do, you can do
 from the dashboard or a phone, and every call from any of them lands in one journal.
