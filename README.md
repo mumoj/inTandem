@@ -315,7 +315,8 @@ inTandem serve ... --ntfy-topic my-private-topic     # publishes summaries to nt
 ```
 
 The command gets `$INTANDEM_NOTIFY`, `$INTANDEM_KIND`, `$INTANDEM_EVENT` (JSON) and `$INTANDEM_TASK`,
-and is killed if it runs longer than 30 seconds.
+and is killed if it runs longer than 30 seconds. An event over 64 KiB arrives as a stub with
+`truncated` set, because Linux caps the size of an environment variable.
 
 ## Configuration
 
