@@ -5,9 +5,12 @@ import json
 import os
 import time
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
+from intandem import runtime
 from intandem.config import TaskPaths
 from intandem.opencode.models import PermissionAction
 from intandem.supervisor.prompts import directive_marker, spec_marker
@@ -600,6 +603,41 @@ async def test_shutdown_releases_waiters(supervisor: Supervisor) -> None:
     waiter = asyncio.create_task(supervisor.wait(5))
     await asyncio.sleep(0)
     await supervisor.begin_shutdown()
+    attention = await asyncio.wait_for(waiter, 1)
+    assert attention.reason is WaitReason.STOPPED
+
+
+async def test_a_crashed_worker_releases_waiters(
+    supervisor: Supervisor, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def crash(*_args: Any) -> None:
+        raise RuntimeError("the pump died")
+
+    async def idle(*_args: Any) -> None:
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(runtime, "pump_events", crash)
+    monkeypatch.setattr(runtime, "watch_host", idle)
+    unused: Any = None
+    settings: Any = SimpleNamespace(poll_interval=60.0)
+    task = runtime.Task(
+        settings=settings,
+        paths=unused,
+        client=unused,
+        supervisor=supervisor,
+        recorder=unused,
+        app=unused,
+        login=unused,
+        version=unused,
+        stop=asyncio.Event(),
+    )
+    await supervisor.submit_spec("S-1", "Add a greeting.")
+    waiter = asyncio.create_task(supervisor.wait(5))
+    await asyncio.sleep(0)
+
+    with pytest.raises(ExceptionGroup):
+        await task.run_workers()
+
     attention = await asyncio.wait_for(waiter, 1)
     assert attention.reason is WaitReason.STOPPED
 

@@ -156,17 +156,20 @@ class Task:
         A worker that dies takes the others with it: its exception leaves the
         task group, as it should, rather than leaving a supervisor half alive.
         """
-        async with asyncio.TaskGroup() as group:
-            workers = [
-                group.create_task(pump_events(self.client, self.supervisor, self.recorder)),
-                group.create_task(self.supervisor.monitor(self.settings.poll_interval)),
-                group.create_task(watch_host(self.client, self.journal)),
-            ]
-            stopping = group.create_task(self.stop.wait())
-            await asyncio.wait({stopping, *workers}, return_when=asyncio.FIRST_COMPLETED)
+        try:
+            async with asyncio.TaskGroup() as group:
+                workers = [
+                    group.create_task(pump_events(self.client, self.supervisor, self.recorder)),
+                    group.create_task(self.supervisor.monitor(self.settings.poll_interval)),
+                    group.create_task(watch_host(self.client, self.journal)),
+                ]
+                stopping = group.create_task(self.stop.wait())
+                await asyncio.wait({stopping, *workers}, return_when=asyncio.FIRST_COMPLETED)
+                for task in (stopping, *workers):
+                    task.cancel()
+        finally:
+            # Here, not in the group: a crashed worker cancels the group's body.
             await self.supervisor.begin_shutdown()
-            for task in (stopping, *workers):
-                task.cancel()
 
 
 @contextlib.asynccontextmanager
