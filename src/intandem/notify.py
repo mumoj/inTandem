@@ -34,6 +34,9 @@ from intandem.opencode.jsonpath import dig_list, dig_str
 
 log = logging.getLogger(__name__)
 
+MAX_EVENT_BYTES = 64 * 1024
+"""Linux refuses to start a process with an environment string over 128 KiB."""
+
 
 @dataclass(frozen=True, slots=True)
 class Alert:
@@ -63,6 +66,25 @@ class Alert:
             case _:
                 return None
         return cls(event.type, summary, event.session_id, event.model_dump(mode="json"))
+
+
+def _event_json(alert: Alert) -> str:
+    """The event for ``$INTANDEM_EVENT``, or a stub if it is too big to pass on.
+
+    A stub rather than a cut, so the command always gets valid JSON. Losing the
+    event's detail is better than losing the alert.
+    """
+    encoded = json.dumps(alert.payload)  # ASCII by default, so characters are bytes
+    if len(encoded) <= MAX_EVENT_BYTES:
+        return encoded
+    return json.dumps(
+        {
+            "kind": alert.kind,
+            "session_id": alert.session_id,
+            "truncated": True,
+            "size": len(encoded),
+        }
+    )
 
 
 class Notifier:
@@ -118,7 +140,7 @@ class Notifier:
             **os.environ,
             "INTANDEM_NOTIFY": alert.summary,
             "INTANDEM_KIND": alert.kind,
-            "INTANDEM_EVENT": json.dumps(alert.payload),
+            "INTANDEM_EVENT": _event_json(alert),
             "INTANDEM_TASK": self.task,
             "INTANDEM_STATE_DIR": str(self.state_dir),
         }
@@ -152,7 +174,8 @@ class Notifier:
             response = await http.post(
                 self.ntfy_url,
                 content=alert.summary.encode(),
-                headers={"Title": f"inTandem {self.task}: {alert.kind}"},
+                # Bytes: httpx encodes a str header as ASCII, and ntfy reads UTF-8.
+                headers={b"Title": f"inTandem {self.task}: {alert.kind}".encode()},
             )
             response.raise_for_status()
         except httpx.HTTPError as exc:

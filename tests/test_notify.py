@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import httpx
@@ -95,3 +96,42 @@ async def test_ntfy_is_opt_in(tmp_path: Path) -> None:
 
     assert route.calls.last.request.content == b"per_1 wants edit"
     assert route.calls.last.request.headers["title"] == "inTandem demo: blocked"
+
+
+async def test_an_event_too_big_for_the_environment_still_runs_the_command(tmp_path: Path) -> None:
+    out = tmp_path / "out.json"
+    notifier = Notifier(
+        log_path=tmp_path / "notifications.log",
+        task="demo",
+        state_dir=tmp_path,
+        command=f'printf "%s" "$INTANDEM_EVENT" > {out}',
+    )
+    payload = {"diff": "x" * 200_000}
+    notifier.escalate(Alert("permission.asked", "per_1 wants edit", "ses_1", payload))
+    await notifier.drain()
+
+    assert json.loads(out.read_text()) == {
+        "kind": "permission.asked",
+        "session_id": "ses_1",
+        "truncated": True,
+        "size": len(json.dumps(payload)),
+    }
+
+
+@respx.mock
+async def test_a_non_ascii_task_name_reaches_ntfy(tmp_path: Path) -> None:
+    route = respx.post("https://ntfy.example/topic-abc").respond(200)
+    async with httpx.AsyncClient() as http:
+        notifier = Notifier(
+            log_path=tmp_path / "a.log",
+            task="café",
+            state_dir=tmp_path,
+            ntfy_topic="topic-abc",
+            ntfy_server="https://ntfy.example/",
+            http=http,
+        )
+        notifier.escalate(Alert("hung", "no text for 300s"))
+        await notifier.drain()
+
+    assert route.called
+    assert dict(route.calls.last.request.headers.raw)[b"Title"] == "inTandem café: hung".encode()
