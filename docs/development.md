@@ -24,8 +24,10 @@ GitHub Actions publishes releases to PyPI. Update `version` in `pyproject.toml` 
 `__version__` in `src/intandem/__init__.py`, then create and push a matching tag:
 
 ```bash
-git tag v0.1.1 && git push origin v0.1.1
+git tag v0.1.2 && git push origin v0.1.2
 ```
 
-`.github/workflows/publish.yml` builds and publishes the package. PyPI does not allow a version
-to be published twice, so publish a new version number to correct a release.
+`.github/workflows/publish.yml` builds with `uv` and publishes through PyPI's GitHub Action
+using Trusted Publishing. The action attaches a publish attestation to each distribution. PyPI
+does not allow a version to be published twice, so publish a new version number to correct a
+release.
