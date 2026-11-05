@@ -22,6 +22,8 @@ def status(report: StatusReport) -> list[str]:
     ]
     if activity.running_tools:
         lines.append(f"running   {', '.join(activity.running_tools)}")
+    if activity.tool_details:
+        lines.append(f"tool      {'; '.join(activity.tool_details)}")
     if activity.pending:
         lines.append(f"pending   {', '.join(activity.pending)}  (see `inTandem pending`)")
     if activity.retry:

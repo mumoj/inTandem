@@ -263,7 +263,8 @@ function renderOverview(o) {
   $("subline").textContent = sub.join(" · ");
   $("since-tool").textContent = ago(a.seconds_since_tool);
   $("since-text").textContent = ago(a.seconds_since_text);
-  $("running").textContent = a.running_tools.length ? a.running_tools.join(", ") : "nothing";
+  $("running").textContent = a.tool_details.length ? a.tool_details.join(" · ")
+    : (a.running_tools.length ? a.running_tools.join(", ") : "nothing");
   $("abort").disabled = !a.busy;
 
   renderPending(o.pending);

@@ -598,6 +598,9 @@ class Supervisor:
 
     def _idle_detail(self) -> str:
         info = self.tracker.describe()
+        if info.tool_details:
+            tools = "; ".join(info.tool_details)
+            return f"{tools}; no tool update for {info.seconds_since_tool}s"
         return f"no tool for {info.seconds_since_tool}s, no text for {info.seconds_since_text}s"
 
     # ---- event stream ------------------------------------------------------

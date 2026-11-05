@@ -73,6 +73,37 @@ def test_a_long_running_tool_is_work_until_it_goes_quiet(
     assert tracker.running_tools == {}
 
 
+def test_running_tool_keeps_a_bounded_command_summary(tracker: ActivityTracker) -> None:
+    part = {
+        "type": "tool",
+        "callID": "call_1",
+        "tool": "bash",
+        "state": {
+            "status": "running",
+            "input": {"command": "find / -name 'node' 2>/dev/null | head"},
+        },
+    }
+    tracker.observe(event("message.part.updated", sessionID=SESSION, part=part))
+
+    assert tracker.describe().tool_details == [
+        "bash (running): find / -name 'node' 2>/dev/null | head"
+    ]
+
+
+def test_tool_summary_is_truncated(tracker: ActivityTracker) -> None:
+    part = {
+        "type": "tool",
+        "callID": "call_1",
+        "tool": "bash",
+        "state": {"status": "running", "input": {"command": "x" * 500}},
+    }
+    tracker.observe(event("message.part.updated", sessionID=SESSION, part=part))
+
+    detail = tracker.describe().tool_details[0]
+    assert len(detail) <= 256
+    assert detail.endswith("…")
+
+
 def test_a_pending_request_blocks_until_answered(tracker: ActivityTracker) -> None:
     tracker.observe(event("permission.asked", id="per_1", sessionID=SESSION))
     assert tracker.classify() is Activity.BLOCKED
