@@ -1,20 +1,22 @@
 # inTandem
 
-**Let a cheaper model write the code while your best model plans and reviews it.**
+**A harness for pairing coding agents: one model plans, another builds, and the planner reviews the result.**
 
-Your planner (Claude Code or Codex) writes a spec. inTandem hands it to a cheaper model running
-in [OpenCode](https://opencode.ai), watches the work, and tells the planner exactly why it stopped.
+Your planner (Claude Code or Codex) writes a spec. inTandem hands it to the model you choose in
+[OpenCode](https://opencode.ai), watches the work, and tells the planner exactly why it stopped.
 It checks what the implementer did instead of taking its word, and you can step in from a browser
 or your phone.
 
+inTandem runs as an MCP server on top of these tools, so it works with them rather than replacing them.
+
 <p align="center">
   <img src="https://raw.githubusercontent.com/mumoj/inTandem/main/docs/overview.svg" width="900"
-       alt="A planner sends a spec to inTandem, which prompts a cheaper model in OpenCode. It edits your repo, and inTandem returns a verified result. You can allow or deny requests from a dashboard or phone.">
+       alt="A planner sends a spec to inTandem, which prompts the implementer model in OpenCode. It edits your repo, and inTandem returns a verified result. You can allow or deny requests from a dashboard or phone.">
 </p>
 
 ## Why use it
 
-- **Spend less.** Your most capable model only plans and reviews, and any model OpenCode supports does the typing.
+- **Choose who does what.** Pick the planner, then pick the implementer from the models available in OpenCode.
 - **Trust the result.** A result only counts if it's fresh, and you review the real diff.
 - **Protect what matters.** Mark files as off limits. inTandem blocks edits and catches any that slip through.
 - **Never get stuck.** You get an alert when the implementer needs you, stalls or goes quiet.
@@ -67,7 +69,7 @@ The same controls work from the command line, including over SSH from your phone
 inTandem status      # what it's doing right now
 inTandem pending     # what it's waiting on
 inTandem allow       # or: inTandem deny --message "leave that file alone"
-inTandem cost        # what it has spent
+inTandem cost        # what the implementer has spent
 ```
 
 ## Learn more
