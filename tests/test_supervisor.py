@@ -443,6 +443,33 @@ async def test_wait_times_out_while_work_continues(supervisor: Supervisor) -> No
     assert attention.reason is WaitReason.TIMEOUT
 
 
+async def test_hung_tool_attention_includes_a_command_summary(
+    supervisor: Supervisor, clock: FakeClock
+) -> None:
+    record = await supervisor.submit_spec("S-1", "Add a greeting.")
+    await supervisor.handle_event(
+        event(
+            "message.part.updated",
+            sessionID=record.session_id,
+            part={
+                "type": "tool",
+                "callID": "call_1",
+                "tool": "bash",
+                "state": {
+                    "status": "running",
+                    "input": {"command": "find / -name 'node' 2>/dev/null | head"},
+                },
+            },
+        )
+    )
+    clock.advance(721)
+
+    attention = supervisor.attention()
+    assert attention is not None
+    assert attention.reason is WaitReason.HUNG
+    assert "bash (running): find / -name 'node' 2>/dev/null | head" in attention.detail
+
+
 async def test_a_turn_that_ends_without_a_result(supervisor: Supervisor) -> None:
     record = await supervisor.submit_spec("S-1", "Add a greeting.")
     await supervisor.handle_event(event("session.idle", sessionID=record.session_id))

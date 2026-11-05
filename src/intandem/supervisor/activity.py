@@ -42,6 +42,7 @@ class Activity(StrEnum):
 
 
 _RUNNING_TOOL_STATES = frozenset({"pending", "running"})
+_TOOL_DETAIL_LIMIT = 240
 
 
 class ActivityReport(BaseModel):
@@ -55,6 +56,7 @@ class ActivityReport(BaseModel):
     pending: list[str]
     error: str | None
     retry: str | None
+    tool_details: list[str] = field(default_factory=list[str])
 
 
 @dataclass
@@ -84,6 +86,7 @@ class ActivityTracker:
     pending: set[str] = field(default_factory=set[str])
     children: set[str] = field(default_factory=set[str])
     running_tools: dict[str, str] = field(default_factory=dict[str, str])
+    running_tool_details: dict[str, str] = field(default_factory=dict[str, str])
 
     def __post_init__(self) -> None:
         self.last_tool = self.last_text = self.turn_started_at = self.clock()
@@ -97,6 +100,7 @@ class ActivityTracker:
         self.retry = None
         self.pending.clear()
         self.running_tools.clear()
+        self.running_tool_details.clear()
         self.last_tool = self.last_text = self.clock()
 
     def turn_started(self) -> None:
@@ -206,8 +210,12 @@ class ActivityTracker:
             call = dig_str(part, "callID") or dig_str(part, "id") or ""
             if dig(part, "state", "status") in _RUNNING_TOOL_STATES:
                 self.running_tools[call] = dig_str(part, "tool") or "tool"
+                detail = _tool_detail(part)
+                if detail:
+                    self.running_tool_details[call] = detail
             else:
                 self.running_tools.pop(call, None)
+                self.running_tool_details.pop(call, None)
         elif kind in ("text", "reasoning"):
             self.last_text = now
 
@@ -216,6 +224,7 @@ class ActivityTracker:
         self.busy = False
         self.retry = None
         self.running_tools.clear()
+        self.running_tool_details.clear()
 
     def classify(self) -> Activity:
         if self.pending:
@@ -246,6 +255,7 @@ class ActivityTracker:
             seconds_since_tool=round(now - self.last_tool),
             seconds_since_text=round(now - self.last_text),
             running_tools=sorted(set(self.running_tools.values())),
+            tool_details=sorted(set(self.running_tool_details.values())),
             pending=sorted(self.pending),
             error=self.error,
             retry=self.retry,
@@ -255,3 +265,18 @@ class ActivityTracker:
 def _retry_detail(event: Event) -> str:
     message = dig_str(event.properties, "status", "message") or ""
     return f"attempt {event.prop('status', 'attempt')}: {message[:200]}"
+
+
+def _tool_detail(part: object) -> str | None:
+    """Return a bounded summary of a running tool call for stall diagnosis."""
+    tool = dig_str(part, "tool") or "tool"
+    status = dig_str(part, "state", "status") or "unknown"
+    command = dig_str(part, "state", "input", "command")
+    title = dig_str(part, "state", "title")
+    summary = command or title
+    if not summary:
+        return f"{tool} ({status})"
+    summary = " ".join(summary.split())
+    if len(summary) > _TOOL_DETAIL_LIMIT:
+        summary = summary[: _TOOL_DETAIL_LIMIT - 1] + "…"
+    return f"{tool} ({status}): {summary}"
