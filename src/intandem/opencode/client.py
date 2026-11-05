@@ -7,7 +7,8 @@ new class rather than a rewrite.
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Mapping
+import asyncio
+from collections.abc import AsyncIterator, Iterable, Mapping
 from types import TracebackType
 from typing import Any, Protocol, Self
 
@@ -93,6 +94,22 @@ _MESSAGES = TypeAdapter(list[Message])
 _PERMISSIONS = TypeAdapter(list[PermissionRequest])
 _QUESTIONS = TypeAdapter(list[QuestionRequest])
 _DIFFS = TypeAdapter(list[FileDiff])
+
+
+def _merge_diffs(turns: Iterable[list[FileDiff]]) -> list[FileDiff]:
+    """One summary per file. OpenCode's patch text is dropped: it can be huge, and
+    a turn's patch says nothing about the file once a later turn has changed it."""
+    merged: dict[str | None, FileDiff] = {}
+    for turn in turns:
+        for diff in turn:
+            seen = merged.setdefault(diff.file, FileDiff(file=diff.file, status=diff.status))
+            seen.additions += diff.additions
+            seen.deletions += diff.deletions
+            if diff.status == "deleted":
+                seen.status = "deleted"
+    return list(merged.values())
+
+
 _BOOL = TypeAdapter(bool)
 
 
@@ -235,7 +252,19 @@ class OpenCodeClient:
         return _BOOL.validate_json(response.content)
 
     async def diff(self, session_id: str) -> list[FileDiff]:
-        response = await self._request("GET", f"/session/{session_id}/diff")
+        """What the session changed, summed across its turns.
+
+        OpenCode keeps a diff per user message and answers an empty list without
+        a ``messageID``, so a session has to be asked one turn at a time.
+        """
+        messages = await self.messages(session_id)
+        turns = [message.info.id for message in messages if message.info.role == "user"]
+        return _merge_diffs(await asyncio.gather(*(self._turn_diff(session_id, t) for t in turns)))
+
+    async def _turn_diff(self, session_id: str, message_id: str) -> list[FileDiff]:
+        response = await self._request(
+            "GET", f"/session/{session_id}/diff", params={"messageID": message_id}
+        )
         return _DIFFS.validate_json(response.content)
 
     async def dispose(self) -> None:
