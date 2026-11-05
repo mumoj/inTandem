@@ -72,6 +72,13 @@ inTandem allow       # or: inTandem deny --message "leave that file alone"
 inTandem cost        # what the implementer has spent
 ```
 
+## How it works
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/mumoj/inTandem/main/docs/architecture.svg" width="1000"
+       alt="The planner, terminal and browser all call the bridge inside the inTandem hub. The bridge calls the supervisor, which prompts opencode serve. OpenCode calls the model provider and edits your working tree, and streams events back to the event pump. The monitor and host watch run alongside, and the supervisor writes state to disk and sends alerts.">
+</p>
+
 ## Learn more
 
 | | |
