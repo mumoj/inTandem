@@ -1,36 +1,46 @@
 # Using inTandem
 
-## Use it from Claude Code or Codex
+## Connect it to a planner
 
-Register inTandem once as an MCP server:
+Register inTandem as an MCP server for Claude Code or Codex:
 
 ```bash
 claude mcp add inTandem --scope user -- inTandem mcp      # Claude Code
 codex mcp add inTandem -- inTandem mcp                    # Codex
 ```
 
-That's all the setup there is. Ask the planner to delegate work, for example "have a cheaper
-model write the tests for citations.py through inTandem", and it uses the tools:
-`submit_spec`, `wait`, `get_result`, `get_pending`, `reply_permission`, `send_directive`,
-`finish`, and the rest. The server's instructions teach it the planner loop.
+After registration, the planner can delegate a task through inTandem while retaining
+responsibility for the specification and review. For example, ask it to have an implementation
+model write tests for `citations.py`. It uses tools such as `submit_spec`, `wait`,
+`get_result`, `get_pending`, `reply_permission`, `send_directive`, and `finish` to submit work,
+monitor it, and review the result.
 
-- **Nothing to start.** When the planner connects, `inTandem mcp` starts one OpenCode server in
-  the background, and the first `submit_spec` starts a supervisor for the planner's project.
-  `start_implementer` is only for setting a default model or protected files.
-- **Lives as long as the planner.** Everything runs in the `inTandem mcp` process and its one
-  OpenCode child. When the planner disconnects or exits, every supervisor finishes, capturing
-  its evidence, and OpenCode stops. State stays on disk, so the next session resumes it.
-- **Any implementer, per spec.** `submit_spec` takes `model` (`provider/model`) and `agent`
-  (`build`, `plan`, or one from your OpenCode config). `list_models` shows what is available.
-- **Subagents count.** When the implementer delegates to an OpenCode subagent, the subagent's
-  permission requests block the spec and its activity keeps the spec alive. Protected files
-  are enforced in its session too.
-- **Several implementers at once.** For independent pieces of one task, the planner calls
-  `spawn_implementer` once per piece. See below.
+### Session lifecycle
+
+When the planner connects, `inTandem mcp` starts one OpenCode server in the background. The
+first `submit_spec` starts a supervisor for the planner's project. Use `start_implementer` only
+to set a default model or protected files.
+
+The MCP process and its OpenCode child exist for the planner session. When the planner
+disconnects or exits, supervisors finish and preserve their evidence, then OpenCode stops. Task
+state remains on disk and can be resumed in a later session.
+
+### Models and subagents
+
+Each `submit_spec` can set a `model` (`provider/model`) and `agent` (`build`, `plan`, or an agent
+from your OpenCode configuration). Use `list_models` to see the models OpenCode reports.
+
+If an implementer delegates to an OpenCode subagent, that subagent's permission requests also
+block the spec. Its activity keeps the spec active, and protected-file rules apply to its
+session as well.
+
+For independent parts of a task, the planner can call `spawn_implementer` once for each part.
 
 ## Parallel implementers
 
-Like a planner's own subagents, but each one is a cheaper model with its own guardrails:
+Use parallel implementers when a task has independent pieces. Each one has a name, a separate
+worktree, and its own supervisor, so its changes can be reviewed, merged, or discarded
+independently:
 
 ```text
 spawn_implementer(name="farewell", text=..., model="openai/gpt-5.6-luna")
@@ -40,49 +50,49 @@ land_implementer(name="farewell")            # review: the diff against where it
 land_implementer(name="farewell", action="merge")
 ```
 
-- **Isolated where it matters.** Each implementer works on its own branch, `intandem/<name>`, in
-  a git worktree under the state root, outside the repository, with its own supervisor,
-  journal and protected files. The planner's working tree stays clean.
-- **One wait for all of them.** `wait_any` returns as soon as any implementer finishes, blocks
-  or stops, and lists every one that needs attention. While it waits, it announces each
-  change as an MCP progress message ("farewell finished S-1: result"), so the planner's UI
-  shows an implementer ending as it happens.
-- **Addressed by name.** Every other tool takes the implementer's name as `workdir`:
-  `get_pending(workdir="farewell")`, `send_directive(..., workdir="farewell")`.
-- **Landing is explicit.** `review` shows committed and uncommitted changes against the fork
-  point. `merge` commits what the implementer left and merges it into the current branch, and
-  a conflicting merge is aborted, leaving the repository untouched. `discard` throws the work
-  away. Both stop the supervisor, remove the worktree and branch, and keep its state under
-  `landed/` as evidence. Files left behind by running checks, such as `__pycache__`, are
-  never committed.
-- **Cheap to add.** Implementers share [one process and one OpenCode server](architecture.md#one-process-one-opencode), so a
-  new one starts in a few seconds once the session's OpenCode is up.
+Each implementer works on a dedicated `intandem/<name>` branch in a Git worktree under the
+state root, outside the repository. It has its own supervisor, journal, and protected-file
+configuration; the planner's working tree remains unchanged.
 
-## Watch it in a browser
+`wait_any` returns when any implementer finishes, blocks, or stops, and identifies every
+implementer that needs attention. While it waits, it sends MCP progress messages such as
+`farewell finished S-1: result`.
 
-Every tool reply carries a `dashboard` link, plus an `overview` link to the page that lists
-every implementer of the session. `inTandem serve` prints its dashboard link on startup. The page
-shows what the implementer is doing and why `wait` would return right now, its latest
-messages, the result and changed files, spend, and a timeline of everything in the journal.
-Permission requests and questions appear with **Allow**/**Deny** and answer buttons, so the
-human can unblock a run without a terminal. **Open in OpenCode** opens OpenCode's own web UI on
-the same server. The access token travels in the link's `#fragment`, which browsers never send
-to a server.
+Pass the implementer's name as `workdir` to address it with other tools:
+`get_pending(workdir="farewell")` and `send_directive(..., workdir="farewell")`, for example.
 
-## The CLI: for humans and scripts
+Landing is explicit. `review` shows committed and uncommitted changes relative to the fork
+point. `merge` commits the implementer's changes and merges them into the current branch. If
+the merge conflicts, it is aborted and the repository is left unchanged. `discard` removes the
+work instead. Both operations stop the supervisor, remove the worktree and branch, and retain
+state under `landed/`. Files created by checks, such as `__pycache__`, are not committed.
 
-A planner should use the MCP tools. The CLI drives the same bridge, so it is for everything
-else:
+Parallel implementers share [one process and one OpenCode server](architecture.md#one-process-one-opencode).
+Once OpenCode is running for the session, additional implementers reuse it.
 
-- **Stepping in from a terminal.** Over SSH from a phone, with no browser and no open port:
-  see what is blocked, allow or deny it, and check on spend.
-- **Scripts and CI.** Exit codes carry the reason (see [Exit codes](#exit-codes)), and
-  `--json` gives the raw response, so a shell loop can drive an implementer with no planner.
-- **Planners without MCP.** Anything that can run a shell command can use inTandem.
-- **A supervisor of your own.** `inTandem serve` runs one task on a hub of its own, with its own
-  OpenCode server, outside any planner session.
+## Monitor work in a browser
 
-Stepping in on a running implementer, whoever started it:
+Every MCP response includes a `dashboard` link and an `overview` link for the session's
+implementers. `inTandem serve` prints the dashboard link when it starts. The dashboard shows the
+implementer's current activity, why `wait` would return, recent messages, results, changed
+files, spend, and a journal timeline.
+
+Permission requests and questions include controls to allow, deny, or answer them. This lets a
+person resolve a request without opening a terminal. **Open in OpenCode** opens OpenCode's web
+interface on the same server. The access token is stored in the link's `#fragment`, which
+browsers do not send to the server.
+
+## Use the command line
+
+Planners normally use the MCP tools. The CLI calls the same bridge, so a person or script can
+step in without creating a separate view of the task. It is useful for:
+
+- Manual intervention from a terminal or over SSH.
+- Scripts and CI, where [exit codes](#exit-codes) identify the result and `--json` returns the raw response.
+- Planners that can run shell commands but do not support MCP.
+- Starting a task directly with `inTandem serve`, outside a planner session.
+
+To inspect or intervene in a running implementer:
 
 ```bash
 inTandem status                      # what it is doing, and why `wait` would return now
@@ -93,7 +103,7 @@ inTandem log                         # the journal
 inTandem cost
 ```
 
-Running a task without MCP, from a script or a planner that shells out:
+To run a task without MCP, from a script or a shell-based planner:
 
 ```bash
 inTandem serve ~/work/my-task -m openrouter/qwen/qwen3-coder -p instruction.md
@@ -105,27 +115,27 @@ In another shell:
 inTandem spec S-1 --file spec.md     # fresh session, spec delivered (-m/--agent: per spec)
 inTandem wait                        # exit code says why it returned
 inTandem result                      # the implementer's own verdict
-inTandem diff                        # what it actually changed: check, don't trust
+inTandem diff                        # inspect the changed files
 inTandem directive S-1 D-1 correct "Use the existing retry helper."
 inTandem spec S-2 --file next.md     # requirements changed: new id, new session
 inTandem finish
 ```
 
-These verbs mirror the MCP tools one for one: `spec` is `submit_spec`, `directive` is
-`send_directive`, `allow`/`deny` are `reply_permission`, and so on.
+The CLI verbs map directly to MCP tools: `spec` maps to `submit_spec`, `directive` to
+`send_directive`, and `allow`/`deny` to `reply_permission`.
 
-To watch the implementer work, `inTandem attach` opens OpenCode's own TUI on the live session,
-and `inTandem attach --web` prints a URL and login for OpenCode's web UI. Watch there, but steer
-with `say` or `directive`: a prompt typed into OpenCode never reaches the journal.
+`inTandem attach` opens OpenCode's TUI for the live session. `inTandem attach --web` prints a
+URL and login for OpenCode's web interface. Use `say` or `directive` to steer the work; prompts
+entered directly in OpenCode do not appear in the inTandem journal.
 
-With one supervisor running, no flags are needed to find it. With several, pass `--task`
-with a name prefix, the task directory, or the state directory.
+When one supervisor is running, the CLI finds it without flags. When several are running, pass
+`--task` with a name prefix, task directory, or state directory.
 
 ## Exit codes
 
-`inTandem wait` returns when the implementer needs attention, and its exit code says why, so a
-script can branch without parsing anything. The MCP `wait` tool returns the same `reason`
-with a `next_step`.
+`inTandem wait` returns when the implementer needs attention. Its exit code identifies the
+current state, so scripts can make a decision without parsing free-form output. The MCP `wait`
+tool returns the same `reason` with a `next_step`.
 
 | exit | reason | do this |
 |---|---|---|
@@ -138,9 +148,9 @@ with a `next_step`.
 | 7 | `stopped` | the supervisor is shutting down |
 | 124 | `timeout` | still working; wait again |
 
-`wait` is level-triggered: it reports the current state, not the moment a state began, so a
-planner that calls it in a loop cannot miss a wakeup. A result is reported once the turn is
-over, not when the file lands, so the planner never reviews a moving target.
+`wait` is level-triggered: it reports the current state rather than the moment it began. A
+planner can therefore call it in a loop without missing a change. Results are reported after
+the turn ends, not when a file first appears, so the planner reviews a stable set of changes.
 
 [`skills/intandem-planner/SKILL.md`](../skills/intandem-planner/SKILL.md) is the planner loop written
 as an Agent Skill for Claude Code or Codex.
@@ -148,25 +158,26 @@ as an Agent Skill for Claude Code or Codex.
 ## Alerts
 
 Permission requests, questions, provider errors, stalls and protected-file violations are
-escalated. Finished turns are not: they are for the planner's `wait`, and a notification
-nobody needed trains people to ignore the channel. Every alert is recorded in
-`notifications.log`; delivery is opt-in:
+escalated. Completed turns are returned through the planner's `wait` call instead of becoming
+alerts, keeping notifications focused on work that needs a response. Every alert is recorded
+in `notifications.log`; delivery is opt-in:
 
 ```bash
 inTandem serve ... --notify-cmd 'notify-send "inTandem" "$INTANDEM_NOTIFY"'
 inTandem serve ... --ntfy-topic my-private-topic     # publishes summaries to ntfy.sh
 ```
 
-The command gets `$INTANDEM_NOTIFY`, `$INTANDEM_KIND`, `$INTANDEM_EVENT` (JSON) and `$INTANDEM_TASK`,
-and is killed if it runs longer than 30 seconds. An event over 64 KiB arrives as a stub with
-`truncated` set, because Linux caps the size of an environment variable.
+The command receives `$INTANDEM_NOTIFY`, `$INTANDEM_KIND`, `$INTANDEM_EVENT` (JSON), and
+`$INTANDEM_TASK`. inTandem terminates it after 30 seconds. Events larger than 64 KiB arrive as
+a stub with `truncated` set because Linux limits environment-variable size.
 
-A stall alert names the stuck tool but never its command, which could hold a secret. To see the
-command, use `inTandem status` or the dashboard.
+A stall alert identifies the stuck tool but omits its command, which could contain a secret. To
+see the command, use `inTandem status` or the dashboard.
 
 ## Configuration
 
-Every option of `inTandem serve` can also come from the environment with an `INTANDEM_` prefix:
+Every `inTandem serve` option can also be set with an environment variable using the
+`INTANDEM_` prefix:
 
 | variable | default | |
 |---|---|---|
@@ -181,9 +192,9 @@ Every option of `inTandem serve` can also come from the environment with an `INT
 
 ## Limitations
 
-- OpenCode 1.x only, for now.
-- One active spec per task at a time, by design. Parallel work means one worktree each.
-- `list_models` shows what OpenCode lists, not what an account accepts: a ChatGPT login
-  refuses some OpenAI models, and that surfaces as `error` from `wait`.
-- `wait` reasons are heuristics over the event stream. The thresholds are configurable,
-  and `inTandem status` shows the numbers behind each call.
+- OpenCode 1.x is currently supported.
+- A task has one active specification at a time. Run parallel work in separate worktrees.
+- `list_models` reports what OpenCode lists, not necessarily what the connected account can use.
+  For example, a ChatGPT login may reject some OpenAI models; `wait` reports that as `error`.
+- `wait` reasons are inferred from the event stream. Their thresholds are configurable, and
+  `inTandem status` displays the values used for each call.

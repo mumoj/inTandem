@@ -5,13 +5,14 @@
        alt="The planner, terminal and browser all call the bridge inside the inTandem hub. The bridge calls the supervisor, which prompts opencode serve. OpenCode calls the model provider and edits your working tree, and streams events back to the event pump. The monitor and host watch run alongside, and the supervisor writes state to disk and sends alerts.">
 </p>
 
-The planner and a human drive the same bridge, so anything the planner can do, you can do
-from the dashboard or a phone, and every call from any of them lands in one journal.
+The planner, dashboard, and CLI use the same bridge. A person can inspect or respond to the
+same task the planner is managing, and every request is recorded in one journal.
 
 ## A typical run
 
-One spec end to end: the implementer tries to edit a protected file, you deny it from the
-dashboard, it finishes, and the planner checks the work before moving on.
+This example follows one specification from submission to review. The implementer attempts a
+protected edit, a person rejects it from the dashboard, and the planner reviews the completed
+work before deciding what to do next.
 
 ```mermaid
 sequenceDiagram
@@ -64,55 +65,59 @@ sequenceDiagram
 
 ## One process, one OpenCode
 
-Every task runs on a hub, so nothing sprawls. Under the MCP server, `inTandem mcp` is the only
-inTandem process, and `inTandem serve` runs the same hub for a task started by hand:
+Each planner session has one inTandem hub. `inTandem mcp` runs that hub for an MCP session, and
+`inTandem serve` runs the same hub for a task started directly.
 
-- **One FastAPI app, one uvicorn.** Each implementer's bridge is mounted at `/t/<task>` in a
-  single app, beside an overview page at `/ui` that lists every implementer. A task's manifest
-  points at its mount, so the CLI and the tools find every task the same way.
-- **One OpenCode server.** Every implementer is a tenant of it, scoped to its own directory
-  through OpenCode's `directory` parameter and reading its own events from the server-wide
-  stream. It starts when the planner connects, so its startup is paid once per session.
-- **Subagents stay guarded.** A server-wide config cannot know each implementer's protected
-  files, so when a subagent's session appears, its supervisor patches that session to deny
-  edits to them. An edit made before the patch lands is caught by the content hash, which
-  stops the spec.
-- **Nothing outlives the session.** On Linux the kernel stops OpenCode if the hub's process
-  dies without cleaning up, even on `kill -9`; elsewhere, the next hub stops any server its
-  predecessor left.
-- **One server, one point of failure.** A wedged OpenCode stalls every implementer on it. The
-  hub replaces a server that dies, and each task resumes from its state file.
+- **One FastAPI application.** Each implementer's bridge is mounted at `/t/<task>` in one
+  application. An overview page at `/ui` lists all implementers. Task manifests point to their
+  mount, so the CLI and MCP tools locate tasks in the same way.
+- **One OpenCode server per hub.** Implementers share the server while remaining scoped to
+  separate directories through OpenCode's `directory` parameter. Each supervisor reads its own
+  events from the server-wide stream. Starting OpenCode once per session avoids repeating its
+  startup work for every task.
+- **Protected-file rules extend to subagents.** The server-wide configuration cannot express
+  each implementer's protected files. When a subagent session appears, its supervisor adds the
+  rule to that session. A content hash detects an edit that arrives before the rule is applied
+  and stops the specification.
+- **Session cleanup is tied to the hub.** On Linux, the kernel stops OpenCode if the hub process
+  dies without cleanup, including after `kill -9`. On other platforms, the next hub stops a
+  server left by its predecessor.
+- **Shared-server failure is handled explicitly.** If OpenCode wedges, every implementer on that
+  hub stalls. The hub replaces a server that dies, and each task resumes from its state file.
 
 ## What it enforces
 
-**A Spec ID is immutable and gets its own session.** Resubmitting the same id and text is a
-no-op, so a retrying planner cannot duplicate work. The same id with different text is refused.
+These rules keep the planner's view of a task aligned with the work OpenCode performs.
 
-**A directive belongs to one spec.** A directive names its spec and is refused once that spec
-is no longer active. In the file-based version of this harness, a leftover correction outlived
-its spec and ended a later turn before the implementer had read its new instructions.
+**Specification IDs are immutable and use separate sessions.** Resubmitting the same ID and
+text does nothing, so a retried planner request cannot duplicate work. Reusing an ID with
+different text is rejected.
 
-**Protected files are enforced twice.** A permission rule stops an edit and waits for a human
-with the diff attached. A content hash, checked while the spec runs, catches the edits that
-arrive another way, such as a shell redirect. Either one aborts the session. The rule is set
-on the spec's session, and patched onto each subagent's session as it appears, because a
-subagent's session does not inherit the spec's rules. A subagent edit that beats the patch is
-left to the hash.
+**Directives apply to one specification.** A directive names its specification and is rejected
+when that specification is no longer active. This prevents a correction intended for earlier
+work from affecting a later task.
 
-**A restart keeps protection honest.** Each spec's baseline records the globs it was taken
-under. Restarting with a different protect list checks the old files against the old baseline
-first: intact, the spec moves to the new list; changed, the old list stays in force until the
-files are restored.
+**Protected files have two safeguards.** A permission rule stops an edit and presents the diff
+for review. A content hash is checked while the specification runs and catches edits that
+arrive another way, such as a shell redirect. Either condition stops the session. The rule is
+set on the specification's session and added to each subagent session as it appears, since
+subagents do not inherit it. The hash covers an edit that happens before that addition.
 
-**A result has to be fresh.** The implementer writes JSON to a path given in its prompt. It
-counts only if it names the active spec and was written after the latest prompt.
+**Restarts preserve protected-file checks.** Each specification baseline records the globs in
+effect when it was created. If a restart uses a different list, inTandem first checks the old
+files against the old baseline. If they are unchanged, the new list takes effect; otherwise,
+the old list remains in force until the files are restored.
 
-**Delivery is idempotent.** Every prompt carries a marker. After a restart, inTandem adopts the
-session it recorded and checks for the marker before sending anything again.
+**Results must match the active work.** The implementer writes JSON to a path supplied in its
+prompt. inTandem accepts it only when it names the active specification and was written after
+the latest prompt.
+
+**Prompts are delivered idempotently.** Each prompt has a marker. After a restart, inTandem
+adopts its recorded session and checks for that marker before sending the prompt again.
 
 ## On disk
 
-Everything about one task lives in one directory under the state root:
+Each task stores its state in one directory under the state root:
 
 ```
 journal.jsonl        one line per state change: grep this first
@@ -124,37 +129,38 @@ results/<spec>.json  the implementer's results
 sessions/<spec>/     final messages and totals per spec
 ```
 
-Beside the tasks, `hosts/` holds the shared OpenCode server's log and a record of it, which is
-how a later session finds a server orphaned by a crash. `worktrees/` holds parallel
-implementers' worktrees, and `landed/` the state of implementers that were merged or discarded.
+Alongside task directories, `hosts/` stores the shared OpenCode server log and record. A later
+session uses that record to find a server orphaned by a crash. `worktrees/` contains parallel
+implementer worktrees, and `landed/` retains the state of implementers that were merged or
+discarded.
 
-Files holding tokens, prompts or model output are created 0600.
+Files containing tokens, prompts, or model output are created with mode `0600`.
 
 ## Design notes
 
-- **One process, one event loop, one task group per task.** A task's event pump, monitor and
-  host watch run under one `asyncio.TaskGroup`; if one dies the rest stop with it, and an exit
-  stack frees its OpenCode instance on the way out. One task failing leaves the others running.
-- **OpenCode runs as a separate process.** OpenCode's SDK can host it in-process, but a
-  supervisor that shares a process with what it supervises cannot restart it when it wedges.
-  One OpenCode is shared by every task on a hub, and replaced if it dies.
-- **A task is not a server.** `open_task` builds a supervisor and its bridge app with no server
-  of its own, and the hub mounts it beside the others, whether `inTandem mcp` or `inTandem serve`
-  runs that hub.
-- **FastAPI only where there is a server.** The OpenCode client is httpx, the supervisor is
-  plain asyncio, and the CLI is Typer over the same pydantic models the bridge serves.
-- **`OpenCodeAPI` is a protocol.** The supervisor never sees HTTP, so the unit tests use an
-  in-memory fake and an OpenCode 2 adapter would be one new class.
-- **Plain files, not a database.** The planner reads the journal with `grep`.
-- **Git is the registry.** Parallel implementers are found from `git worktree list`, so there
-  is no second record of them that could disagree with the repository.
-- **The MCP tools are a thin client.** They keep no state of their own: they find a
-  supervisor by directory, start one on the session's hub if there is none, and call the same
-  bridge endpoints as the CLI. Restarting the planner stops its implementers but loses nothing:
-  each resumes from its state file on next use.
-- **The CLI came first.** Any agent can run a shell command, so inTandem began as a CLI a
-  planner shelled out to, with exit codes as its interface. Structured tools suited planners
-  better, so MCP took over that role; the CLI stayed because a human in a terminal, and a
-  script in CI, still need a way in.
-- **The dashboard is one static page.** It holds no data and needs no build step. It reads its
-  token from the URL fragment and polls the same authenticated endpoints as everyone else.
+- **One process, one event loop, one task group per task.** A task's event pump, monitor, and
+  host watch run in one `asyncio.TaskGroup`. If one fails, the group stops together and an exit
+  stack releases its OpenCode instance. Other tasks continue running.
+- **OpenCode is a separate process.** Its SDK can run it in-process, but a supervisor cannot
+  reliably restart a component sharing its process. A hub shares one OpenCode process across
+  tasks and replaces it if it dies.
+- **A task is not a server.** `open_task` builds a supervisor and bridge application without
+  starting a server. The hub mounts it beside other tasks whether it is run by `inTandem mcp` or
+  `inTandem serve`.
+- **FastAPI is limited to the serving boundary.** The OpenCode client uses httpx, the
+  supervisor uses asyncio, and the CLI uses Typer with the same Pydantic models served by the
+  bridge.
+- **`OpenCodeAPI` is a protocol.** The supervisor does not depend on HTTP directly, which lets
+  unit tests use an in-memory fake and keeps an OpenCode 2 adapter confined to one class.
+- **Task state uses plain files.** The journal is directly inspectable with tools such as
+  `grep`; no database is required for normal inspection.
+- **Git records parallel worktrees.** inTandem reads `git worktree list` rather than keeping a
+  separate registry that could disagree with the repository.
+- **MCP tools are stateless clients.** They find a supervisor by directory, start one on the
+  session hub when needed, and call the same bridge endpoints as the CLI. Restarting the planner
+  stops its implementers without losing state; the next use resumes from the state file.
+- **The CLI remains available outside MCP.** It began as the first planner interface and still
+  gives terminal users, CI scripts, and shell-based agents access to the same operations.
+- **The dashboard is a static page.** It stores no task data and needs no build step. It reads
+  its token from the URL fragment and polls the same authenticated endpoints as the other
+  clients.

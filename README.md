@@ -1,26 +1,28 @@
 # inTandem
 
-**A harness for pairing coding agents: one model plans, another builds, and the planner reviews the result.**
+**A harness for pairing coding agents: one model plans, another implements, and the planner reviews the result.**
 
-Your planner (Claude Code or Codex) writes a spec. inTandem hands it to the model you choose in
-[OpenCode](https://opencode.ai), watches the work, and tells the planner exactly why it stopped.
-It checks what the implementer did instead of taking its word, and you can step in from a browser
-or your phone.
+Your planner (Claude Code or Codex) writes a specification. inTandem sends it to an implementation
+model you select in [OpenCode](https://opencode.ai) and supervises the session. If the implementer
+requests permission, stalls while reasoning, or hangs on a tool call, inTandem reports that to the
+planner. You can respond from the dashboard or command line, including over SSH from a phone.
+When the implementer finishes, inTandem returns its result and changed files to the planner for
+verification and, if appropriate, merging.
 
-inTandem runs as an MCP server on top of these tools, so it works with them rather than replacing them.
+inTandem runs as an MCP server alongside those tools; it does not replace them.
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/mumoj/inTandem/main/docs/overview.svg" width="900"
-       alt="A planner sends a spec to inTandem, which prompts the implementer model in OpenCode. It edits your repo, and inTandem returns a verified result. You can allow or deny requests from a dashboard or phone.">
+       alt="A planner sends a specification to inTandem, which prompts an implementation model in OpenCode. The model edits the repository and inTandem returns its result to the planner for verification. Requests can be approved or denied from a dashboard or phone.">
 </p>
 
 ## Why use it
 
-- **Choose who does what.** Pick the planner, then pick the implementer from the models available in OpenCode.
-- **Trust the result.** A result only counts if it's fresh, and you review the real diff.
-- **Protect what matters.** Mark files as off limits. inTandem blocks edits and catches any that slip through.
-- **Never get stuck.** You get an alert when the implementer needs you, stalls or goes quiet.
-- **Work in parallel.** Run several implementers at once, each on its own branch.
+- **Separate planning from implementation.** Use Claude Code or Codex to define and review the task, then select an implementation model from OpenCode.
+- **Review the work, not only the summary.** A result must belong to the active specification and be written after its latest prompt. The planner can inspect the resulting diff.
+- **Put guardrails around sensitive files.** Configure file globs that implementers may not change. inTandem blocks edits through permissions and detects changes that bypass them.
+- **Know when a task needs attention.** It reports permission requests, stalled reasoning, and unresponsive tools to the planner and the dashboard.
+- **Split independent work safely.** Each parallel implementer receives its own Git branch and worktree, keeping its changes separate until review.
 
 ## Install
 
@@ -32,25 +34,27 @@ opencode auth login             # connect a model provider
 uv tool install intandem        # puts `inTandem` on your PATH
 ```
 
-## Connect your planner
+## Connect a planner
 
-Register inTandem once:
+Register inTandem as an MCP server:
 
 ```bash
 claude mcp add inTandem --scope user -- inTandem mcp      # Claude Code
 codex mcp add inTandem -- inTandem mcp                    # Codex
 ```
 
-There's nothing else to start. inTandem runs when your planner connects and stops when it exits.
+The server starts when the planner connects and stops when it exits. There is no separate daemon
+to start.
 
 ## Run your first task
 
-Ask your planner to delegate something:
+Ask the planner to delegate a task:
 
-> Have a cheaper model write the tests for citations.py through inTandem.
+> Have an implementation model write the tests for citations.py through inTandem.
 
-It writes the spec, waits for the work and reviews the result. Its first reply includes a
-**dashboard link**, where you can watch live and approve or deny requests.
+The planner writes a specification, submits it, waits for the work to finish, and reviews the
+result. Its first response includes a **dashboard link** for monitoring progress and approving
+or denying requests.
 
 To set a default model or protect files for every task, add them when you register:
 
@@ -61,9 +65,9 @@ claude mcp add inTandem --scope user \
   -- inTandem mcp
 ```
 
-## Step in from a terminal
+## Use the command line
 
-The same controls work from the command line, including over SSH from your phone:
+The command line exposes the same controls and can be used over SSH:
 
 ```bash
 inTandem status      # what it's doing right now

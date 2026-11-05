@@ -1,26 +1,28 @@
 ---
 name: intandem-planner
-description: Drive an OpenCode implementer through inTandem - write a spec, submit it, wait, review the result against the files, and correct or move on. Use when a task is delegated to the inTandem implementer, or when asked to check on, unblock, or review its work.
+description: Plan, submit, monitor, and review work delegated to an OpenCode implementation model through inTandem. Use when a task is delegated to inTandem, or when asked to check on, unblock, or review that work.
 ---
 
-# Planning for a inTandem implementer
+# Planning work with an inTandem implementer
 
-You write specs and review results. The implementer, a cheaper model in OpenCode, writes the
-code. Do not do its work for it, and do not take its word for anything.
+You are responsible for defining the task and accepting the result. The implementation model in
+OpenCode writes the code. Give it a bounded specification, monitor its progress, and inspect the
+changes yourself rather than relying on its summary.
 
-If inTandem's MCP tools are available, use them instead of the commands below; the loop is the
-same. `submit_spec`, `wait`, `get_result`, `get_pending`, `reply_permission`,
-`answer_question`, `send_directive` and `finish` map onto `spec`, `wait`, `result` and `diff`,
-`pending`, `allow`/`deny`, `answer`, `directive` and `finish`. Give the human the `dashboard`
-link from the first reply.
+When inTandem's MCP tools are available, use them instead of the commands below. The workflow is
+the same: `submit_spec`, `wait`, `get_result`, `get_pending`, `reply_permission`,
+`answer_question`, `send_directive`, and `finish` map to `spec`, `wait`, `result` and `diff`,
+`pending`, `allow`/`deny`, `answer`, `directive`, and `finish`. Share the `dashboard` link from
+the first reply with the person overseeing the task.
 
-## The loop
+## Workflow
 
-1. **Write the spec to a file.** One outcome, the files it may touch, how to check it is done.
-   Precise but not contradictory: a spec that contradicts itself does not fail, it stalls.
+1. **Write the specification to a file.** State one outcome, the files it may change, and how
+   to verify completion. Make requirements precise and consistent; contradictory requirements
+   often appear as a reasoning stall rather than a clear error.
 2. **Submit it.** `inTandem spec S-<n> --file spec.md`. Spec IDs are immutable; a changed
    requirement is a new ID.
-3. **Wait.** `inTandem wait --timeout 900`, and branch on the exit code:
+3. **Wait for a state change.** Run `inTandem wait --timeout 900` and branch on its exit code:
 
    | exit | meaning | next |
    |---|---|---|
@@ -32,27 +34,28 @@ link from the first reply.
    | 6 | provider error or protected file changed | `inTandem status`, `inTandem log 20` |
    | 124 | still working | wait again |
 
-4. **Review against the files, not the summary.** `inTandem result --json` is a claim.
-   Check it: `inTandem diff`, read the changed files, run the tests yourself. Every
-   self-verdict checked so far has been optimistic at least once.
-5. **Correct or move on.** A fix to this spec: `inTandem directive S-<n> D-<m> correct --file fix.md`.
-   Wrong spec: `inTandem directive S-<n> D-<m> stop "..."`, then a new spec. Done: next spec.
+4. **Review the changes.** `inTandem result --json` reports the implementer's conclusion; use
+   `inTandem diff`, read the changed files, and run the relevant checks before accepting it.
+5. **Correct or continue.** For a correction to the active spec, run
+   `inTandem directive S-<n> D-<m> correct --file fix.md`. If the requirement itself is wrong,
+   stop the spec with `inTandem directive S-<n> D-<m> stop "..."` and submit a new one.
 
-## Releasing a blocked session
+## Resolve blocked work
 
-- `inTandem allow` approves once. Prefer it to `always`, which approves for the whole session.
-- `inTandem deny --message "why"` rejects with feedback; the model carries on with it.
-- `inTandem answer <label>` picks an option for a pending question.
-- An edit to a protected file is never yours to approve. Deny it.
+- `inTandem allow` grants one requested permission. Use it instead of `always` when the
+  permission should not apply to the entire session.
+- `inTandem deny --message "why"` rejects a request and sends the reason to the implementer.
+- `inTandem answer <label>` selects an option for a pending question.
+- A protected-file edit cannot be approved; deny it and choose a different approach.
 
-## When it stalls
+## Respond to a reasoning stall
 
-A reasoning stall is a bug report about your spec more often than about the model. Read the
-last messages before anything else. Restarting throws the reasoning away and walks it into the
-same wall; fixing the contradiction does not.
+Read the latest messages before restarting the work. A reasoning stall often indicates an
+unclear or contradictory requirement. Clarify the specification or send a directive when that is
+the cause; restarting without changing the context usually repeats the same problem.
 
-## Ground rules
+## Working boundaries
 
-- Never edit protected files to make its work pass.
-- Paste command output into reviews; do not summarize it.
-- `inTandem finish` when the task is done. It captures evidence on the way out.
+- Do not edit protected files to make the implementer's work pass.
+- Include command output in reviews rather than paraphrasing it.
+- Call `inTandem finish` when the task is complete so the session records its final evidence.
