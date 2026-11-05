@@ -1,7 +1,7 @@
 [project]
 name = "inTandem"
-version = "0.1.1"
-description = "A harness for pairing coding agents: one model plans, another builds, and the planner reviews the result"
+version = "0.1.2"
+description = "A harness for pairing coding agents: one model plans, another implements, and the planner reviews the result"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
