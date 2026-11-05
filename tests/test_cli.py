@@ -12,7 +12,9 @@ from pydantic import SecretStr
 from typer.testing import CliRunner
 
 from intandem.bridge.manifest import Manifest
-from intandem.cli import app
+from intandem.cli import app, render
+from intandem.supervisor.activity import Activity, ActivityReport
+from intandem.supervisor.supervisor import StatusReport
 
 URL = "http://127.0.0.1:41999"
 runner = CliRunner()
@@ -239,3 +241,28 @@ def test_serve_validates_settings_before_starting(tmp_path: Path) -> None:
     code, output = invoke(tmp_path, "serve", str(tmp_path / "task"), "--model", "gpt-5")
     assert code == 2
     assert "provider/model" in output
+
+
+def test_status_shows_what_a_running_tool_is_doing() -> None:
+    activity = ActivityReport(
+        activity=Activity.WORKING,
+        busy=True,
+        seconds_since_tool=5,
+        seconds_since_text=5,
+        running_tools=["bash"],
+        tool_details=["bash (running): pytest -q"],
+        pending=[],
+        error=None,
+        retry=None,
+    )
+    report = StatusReport(
+        task_dir="/repo",
+        spec_id="S-1",
+        session_id="ses_1",
+        spec_status=None,
+        activity=activity,
+        active_directives=[],
+        result=None,
+    )
+
+    assert "tool      bash (running): pytest -q" in render.status(report)

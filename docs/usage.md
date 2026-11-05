@@ -161,6 +161,9 @@ The command gets `$INTANDEM_NOTIFY`, `$INTANDEM_KIND`, `$INTANDEM_EVENT` (JSON) 
 and is killed if it runs longer than 30 seconds. An event over 64 KiB arrives as a stub with
 `truncated` set, because Linux caps the size of an environment variable.
 
+A stall alert names the stuck tool but never its command, which could hold a secret. To see the
+command, use `inTandem status` or the dashboard.
+
 ## Configuration
 
 Every option of `inTandem serve` can also come from the environment with an `INTANDEM_` prefix:

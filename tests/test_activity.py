@@ -104,6 +104,20 @@ def test_tool_summary_is_truncated(tracker: ActivityTracker) -> None:
     assert detail.endswith("…")
 
 
+def test_the_number_of_tool_summaries_is_bounded(tracker: ActivityTracker) -> None:
+    for number in range(20):
+        part = {
+            "type": "tool",
+            "callID": f"call_{number}",
+            "tool": "bash",
+            "state": {"status": "running", "input": {"command": f"sleep {number}"}},
+        }
+        tracker.observe(event("message.part.updated", sessionID=SESSION, part=part))
+
+    assert len(tracker.describe().tool_details) == 5
+    assert len(tracker.running_tools) == 20
+
+
 def test_a_pending_request_blocks_until_answered(tracker: ActivityTracker) -> None:
     tracker.observe(event("permission.asked", id="per_1", sessionID=SESSION))
     assert tracker.classify() is Activity.BLOCKED

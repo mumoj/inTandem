@@ -26,7 +26,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import StrEnum
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from intandem.opencode.events import ABORTED, Event
 from intandem.opencode.jsonpath import dig, dig_str
@@ -43,6 +43,7 @@ class Activity(StrEnum):
 
 _RUNNING_TOOL_STATES = frozenset({"pending", "running"})
 _TOOL_DETAIL_LIMIT = 240
+_TOOL_DETAIL_COUNT = 5
 
 
 class ActivityReport(BaseModel):
@@ -56,7 +57,7 @@ class ActivityReport(BaseModel):
     pending: list[str]
     error: str | None
     retry: str | None
-    tool_details: list[str] = field(default_factory=list[str])
+    tool_details: list[str] = Field(default_factory=list[str])
 
 
 @dataclass
@@ -210,9 +211,7 @@ class ActivityTracker:
             call = dig_str(part, "callID") or dig_str(part, "id") or ""
             if dig(part, "state", "status") in _RUNNING_TOOL_STATES:
                 self.running_tools[call] = dig_str(part, "tool") or "tool"
-                detail = _tool_detail(part)
-                if detail:
-                    self.running_tool_details[call] = detail
+                self.running_tool_details[call] = _tool_detail(part)
             else:
                 self.running_tools.pop(call, None)
                 self.running_tool_details.pop(call, None)
@@ -255,7 +254,7 @@ class ActivityTracker:
             seconds_since_tool=round(now - self.last_tool),
             seconds_since_text=round(now - self.last_text),
             running_tools=sorted(set(self.running_tools.values())),
-            tool_details=sorted(set(self.running_tool_details.values())),
+            tool_details=sorted(set(self.running_tool_details.values()))[:_TOOL_DETAIL_COUNT],
             pending=sorted(self.pending),
             error=self.error,
             retry=self.retry,
@@ -267,7 +266,7 @@ def _retry_detail(event: Event) -> str:
     return f"attempt {event.prop('status', 'attempt')}: {message[:200]}"
 
 
-def _tool_detail(part: object) -> str | None:
+def _tool_detail(part: object) -> str:
     """Return a bounded summary of a running tool call for stall diagnosis."""
     tool = dig_str(part, "tool") or "tool"
     status = dig_str(part, "state", "status") or "unknown"

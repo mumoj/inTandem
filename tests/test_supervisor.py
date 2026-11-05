@@ -506,6 +506,33 @@ async def test_events_for_other_sessions_are_ignored(supervisor: Supervisor) -> 
     assert supervisor.attention() is None
 
 
+async def test_a_hung_tool_alert_names_the_tool_but_never_its_command(
+    supervisor: Supervisor, clock: FakeClock, paths: TaskPaths
+) -> None:
+    record = await supervisor.submit_spec("S-1", "Add a greeting.")
+    await supervisor.handle_event(
+        event(
+            "message.part.updated",
+            sessionID=record.session_id,
+            part={
+                "type": "tool",
+                "callID": "call_1",
+                "tool": "bash",
+                "state": {
+                    "status": "running",
+                    "input": {"command": "curl -H 'Authorization: Bearer s3cret' example.com"},
+                },
+            },
+        )
+    )
+    clock.advance(721)
+    await supervisor.tick()
+
+    alerts = paths.notifications.read_text()
+    assert "bash running, no tool update for 721s" in alerts
+    assert "s3cret" not in alerts
+
+
 async def test_a_reasoning_stall_is_detected_and_escalated(
     supervisor: Supervisor, clock: FakeClock, paths: TaskPaths
 ) -> None:

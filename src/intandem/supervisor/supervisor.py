@@ -603,6 +603,15 @@ class Supervisor:
             return f"{tools}; no tool update for {info.seconds_since_tool}s"
         return f"no tool for {info.seconds_since_tool}s, no text for {info.seconds_since_text}s"
 
+    def _alert_detail(self) -> str:
+        """``_idle_detail`` without commands: alerts leave this machine, and a
+        command can hold a secret that no pattern would reliably catch."""
+        info = self.tracker.describe()
+        if info.running_tools:
+            tools = ", ".join(info.running_tools)
+            return f"{tools} running, no tool update for {info.seconds_since_tool}s"
+        return self._idle_detail()
+
     # ---- event stream ------------------------------------------------------
 
     async def handle_event(self, event: Event) -> None:
@@ -734,7 +743,9 @@ class Supervisor:
         if activity in (Activity.REASONING_STALL, Activity.HUNG):
             label = activity.value.replace("_", " ")
             spec = self.state.current_spec_id
-            self.notifier.escalate(Alert(activity.value, f"{spec}: {label}, {self._idle_detail()}"))
+            self.notifier.escalate(
+                Alert(activity.value, f"{spec}: {label}, {self._alert_detail()}")
+            )
 
     async def _protected_violation(self, record: SpecRecord, changed: list[str]) -> None:
         record.status = SpecStatus.PROTECTED_VIOLATION
