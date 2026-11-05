@@ -26,6 +26,8 @@ inTandem runs as an MCP server alongside those tools; it does not replace them.
 
 ## Install
 
+inTandem runs on Linux, macOS and WSL. Native Windows isn't supported yet, so on Windows, install it inside [WSL](https://learn.microsoft.com/windows/wsl/install).
+
 You need Python 3.12+, [uv](https://docs.astral.sh/uv/) and OpenCode 1.x.
 
 ```bash
