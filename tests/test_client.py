@@ -203,3 +203,47 @@ async def test_a_session_permission_can_be_replaced(client: OpenCodeClient) -> N
     await client.set_session_permission("ses_1", [rule])
     body = json.loads(route.calls.last.request.content)
     assert body == {"permission": [{"permission": "edit", "pattern": "a.md", "action": "deny"}]}
+
+
+def _message(message_id: str, role: str) -> dict[str, object]:
+    return {"info": {"id": message_id, "role": role}, "parts": []}
+
+
+@respx.mock
+async def test_diff_asks_for_each_user_message_and_merges_them(client: OpenCodeClient) -> None:
+    respx.get(f"{BASE}/session/ses_1/message").respond(
+        json=[
+            _message("msg_1", "user"),
+            _message("msg_2", "assistant"),
+            _message("msg_3", "user"),
+        ]
+    )
+    route = respx.get(f"{BASE}/session/ses_1/diff")
+    route.side_effect = lambda request: httpx.Response(
+        200,
+        json={
+            "msg_1": [
+                {"file": "a.py", "patch": "+x", "additions": 3, "deletions": 1, "status": "added"},
+                {"file": "b.py", "additions": 1, "deletions": 0, "status": "modified"},
+            ],
+            "msg_3": [
+                {"file": "a.py", "additions": 2, "deletions": 2, "status": "modified"},
+                {"file": "b.py", "additions": 0, "deletions": 1, "status": "deleted"},
+            ],
+        }[request.url.params["messageID"]],
+    )
+
+    diffs = await client.diff("ses_1")
+
+    assert route.call_count == 2
+    assert [(d.file, d.additions, d.deletions, d.status) for d in diffs] == [
+        ("a.py", 5, 3, "added"),
+        ("b.py", 1, 1, "deleted"),
+    ]
+    assert "patch" not in diffs[0].model_dump()
+
+
+@respx.mock
+async def test_diff_of_a_session_with_no_messages_is_empty(client: OpenCodeClient) -> None:
+    respx.get(f"{BASE}/session/ses_1/message").respond(json=[])
+    assert await client.diff("ses_1") == []

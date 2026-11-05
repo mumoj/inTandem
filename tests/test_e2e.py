@@ -222,6 +222,8 @@ async def test_a_spec_from_submission_to_result(harness: Harness) -> None:
     assert (harness.task_dir / "hello.txt").read_text() == "hi\n"
     assert (harness.task_dir / "instruction.md").read_text() == "Say hello.\n"
     assert (await harness.get("/result"))["result"]["verdict"] == "done"
+    changed = (await harness.get("/diff"))["files"]
+    assert "hello.txt" in [entry["file"] for entry in changed]
     cost = await harness.get("/cost")
     assert cost["total_tokens"]["input"] > 0
     for expected in ("session_created", "spec_delivered", "permission", "result_observed"):
