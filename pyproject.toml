@@ -5,7 +5,7 @@ description = "A harness for pairing coding agents: one model plans, another imp
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
-requires-python = ">=3.12"
+requires-python = ">=3.12,<3.15"
 authors = [{ name = "Jack Mumo" }]
 keywords = ["ai-agents", "claude-code", "codex", "mcp", "opencode"]
 classifiers = [
@@ -13,18 +13,21 @@ classifiers = [
     "Environment :: Console",
     "Intended Audience :: Developers",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Software Development",
     "Typing :: Typed",
 ]
 dependencies = [
-    "fastapi>=0.115",
-    "httpx>=0.28",
-    "httpx-sse>=0.4",
-    "mcp>=1.20",
-    "pydantic>=2.9",
-    "pydantic-settings>=2.6",
-    "typer>=0.15",
-    "uvicorn>=0.32",
+    "fastapi>=0.116.2,<1",
+    "httpx>=0.28,<1",
+    "httpx-sse>=0.4,<1",
+    "mcp>=2,<3",
+    "pydantic>=2.12,<3",
+    "pydantic-settings>=2.6,<3",
+    "starlette>=0.48,<2",
+    "typer>=0.15,<1",
+    "uvicorn>=0.32,<1",
 ]
 
 [project.scripts]
