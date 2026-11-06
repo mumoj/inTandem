@@ -319,7 +319,7 @@ wheels = [
 
 [[package]]
 name = "intandem"
-version = "0.1.3"
+version = "0.1.2.1"
 source = { editable = "." }
 dependencies = [
     { name = "fastapi" },
