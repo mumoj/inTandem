@@ -28,7 +28,7 @@ inTandem runs as an MCP server alongside those tools; it does not replace them.
 
 inTandem runs on Linux, macOS and WSL. Native Windows isn't supported yet, so on Windows, install it inside [WSL](https://learn.microsoft.com/windows/wsl/install).
 
-You need Python 3.12+, [uv](https://docs.astral.sh/uv/) and OpenCode 1.x.
+You need Python 3.12 to 3.14, [uv](https://docs.astral.sh/uv/) and OpenCode 1.x.
 
 ```bash
 npm i -g opencode-ai@1          # OpenCode 2 isn't supported yet
