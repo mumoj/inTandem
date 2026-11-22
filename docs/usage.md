@@ -188,11 +188,13 @@ Every `inTandem serve` option can also be set with an environment variable using
 | `INTANDEM_QUIET_AFTER` | `300` | seconds with neither |
 | `INTANDEM_STATE_ROOT` | `$XDG_STATE_HOME/intandem` | where task state lives |
 | `INTANDEM_OPENCODE_BIN` | `opencode` | the OpenCode binary |
+| `INTANDEM_NO_INSTALL` | unset | set to stop inTandem installing OpenCode when none is found |
 | `INTANDEM_WORKDIR` | the MCP server's working directory | the project `inTandem mcp` acts on by default |
 
 ## Limitations
 
-- OpenCode 1.x is currently supported.
+- OpenCode 1.x and 2.x are supported; 2.x was tested against 2.3.2. A 2.x question is a form, and
+  only its option fields are offered as questions.
 - A task has one active specification at a time. Run parallel work in separate worktrees.
 - `list_models` reports what OpenCode lists, not necessarily what the connected account can use.
   For example, a ChatGPT login may reject some OpenAI models; `wait` reports that as `error`.

@@ -5,9 +5,11 @@ permission system and its event stream are real, which is the test the
 in-memory fake cannot stand in for: a client stubbed in tests can pass locally
 and still deadlock against the real service.
 
-Needs OpenCode 1.x: set ``INTANDEM_TEST_OPENCODE`` to the binary, or have
-``opencode`` on PATH. The first run downloads OpenCode's OpenAI-compatible
-provider package into ``INTANDEM_TEST_CACHE`` (default ``~/.cache/intandem-test``).
+Needs OpenCode 1.x or 2.x: set ``INTANDEM_TEST_OPENCODE`` to the binary, or have
+``opencode`` on PATH. The same scripts run against either: the scripted model
+fits its tool calls to whichever tools the server offers. The first run
+downloads OpenCode's OpenAI-compatible provider package into
+``INTANDEM_TEST_CACHE`` (default ``~/.cache/intandem-test``).
 """
 
 from __future__ import annotations
@@ -41,13 +43,13 @@ def _opencode() -> str | None:
         return None
     output = subprocess.run([binary, "--version"], capture_output=True, text=True, check=False)
     try:
-        return binary if Version.parse(output.stdout).major == 1 else None
+        return binary if Version.parse(output.stdout).major in (1, 2) else None
     except ValueError:
         return None
 
 
 OPENCODE = _opencode()
-requires_opencode = pytest.mark.skipif(OPENCODE is None, reason="needs OpenCode 1.x")
+requires_opencode = pytest.mark.skipif(OPENCODE is None, reason="needs OpenCode 1.x or 2.x")
 
 
 def free_port() -> int:
@@ -164,6 +166,8 @@ async def harness(
     cache = Path(os.environ.get("INTANDEM_TEST_CACHE", Path.home() / ".cache" / "intandem-test"))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    # 2.x keeps state of its own there; never in the developer's real one.
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state-home"))
     monkeypatch.setenv("XDG_CACHE_HOME", str(cache))
 
     harness = Harness(tmp_path, script)

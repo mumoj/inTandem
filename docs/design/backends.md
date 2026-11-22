@@ -172,6 +172,9 @@ uv run pytest
 
 ## OpenCode 2: a new adapter, not a version bump
 
+Status: built on `feat/opencode-v2`. See "OpenCode 2: as built" below for what changed after
+recording a real server.
+
 OpenCode 2.0 rebuilt the server API from scratch ([migration guide](https://opencode.ai/docs/migrate-v1)),
 so changing `SUPPORTED_MAJOR` is not enough. From the V2 reference and its
 [OpenAPI document](https://opencode.ai/docs/openapi.json) (read in part; field
@@ -269,3 +272,43 @@ is experimental, and so are `permissions` profiles on `thread/start` and
 `process/*`. A v1 Codex adapter can run without questions: answer
 `requestUserInput` with an empty answer, and record it so the planner sees it
 in the journal.
+
+## OpenCode 2: as built
+
+Recorded against a real 2.3.2 server (released 2026-11-18), driven by the
+scripted model, before writing a line of the adapter. The recordings are in
+`tests/fixtures/opencode2`.
+
+- **Detection.** 2.x answers every unknown path, `/global/health` included,
+  with its web app's HTML. `probe_version` asks `/global/health` for JSON, then
+  `/api/info`. The host and each task both read the version from the running
+  server, so a host upgraded between runs is driven correctly.
+- **Package.** `intandem/opencode2/`: `client.py` (`OpenCode2Client`),
+  `rules.py` (`{action, resource, effect}`), `translate.py` (a stateful
+  `Translator`, because only a tool call's first event names the tool). The
+  runtime picks the client by major version.
+- **What the earlier table got wrong or left open:**
+  - No session title on create. inTandem's title goes in `metadata.title`.
+  - Rules: last match wins, as in 1.x. Verified: `[allow edit *, ask edit
+    instruction.md]` stops that edit for a human.
+  - Replying to a permission or a form needs its session id. The client
+    remembers it from the listing, and looks it up when it doesn't know.
+  - Forms: a question's options are field options with a `value`. Answers are
+    keyed by field, and a multiselect takes a list.
+  - Messages come newest first and paged. The client pages back and reverses.
+  - There is no per-directory instance to dispose of, and no status map:
+    `/api/session/active` lists the running sessions, and the rest are idle.
+  - The tools were renamed: `bash` → `shell`, and `filePath` → `path`.
+  - `opencode agent list` is gone. `list_models` asks the server's
+    `/api/agent` instead.
+- **Install.** No OpenCode on PATH or in `~/.opencode/bin` → inTandem downloads
+  release `v2.3.2` for this OS and CPU (x64 baseline without AVX2, musl
+  detected) from GitHub, checks it against the release's `SHA256SUMS`, and
+  puts it in `~/.opencode/bin`. A custom `INTANDEM_OPENCODE_BIN` is never
+  installed. `INTANDEM_NO_INSTALL=1` refuses.
+- **Verified:** the full E2E suite passes against 2.3.2
+  (`INTANDEM_TEST_OPENCODE=<2.x binary>`) and against 1.18.30 (on PATH).
+- **Not done:** subagent sessions in 2.x (the `subagent` tool) were not
+  recorded, so `guard_subagent` relies on `session.created` carrying
+  `parentID` and `permissions`, as the schema says. The content hash still
+  catches a protected edit if that assumption fails.

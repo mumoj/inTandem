@@ -28,12 +28,14 @@ inTandem runs as an MCP server alongside those tools; it does not replace them.
 
 inTandem runs on Linux, macOS and WSL. Native Windows isn't supported yet, so on Windows, install it inside [WSL](https://learn.microsoft.com/windows/wsl/install).
 
-You need Python 3.12 to 3.14, [uv](https://docs.astral.sh/uv/) and OpenCode 1.x.
+You need Python 3.12 to 3.14 and [uv](https://docs.astral.sh/uv/). inTandem drives OpenCode 1.x or 2.x,
+whichever you have: it asks the running server which API it speaks. If OpenCode isn't installed, inTandem
+installs a tested 2.x release to `~/.opencode/bin` the first time it needs it, after checking the download
+against the release's checksums. Set `INTANDEM_NO_INSTALL=1` to turn that off.
 
 ```bash
-npm i -g opencode-ai@1          # OpenCode 2 isn't supported yet
-opencode auth login             # connect a model provider
 uv tool install intandem        # puts `inTandem` on your PATH
+opencode auth login             # connect a model provider (after OpenCode is installed)
 ```
 
 ## Connect a planner

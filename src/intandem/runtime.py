@@ -33,7 +33,8 @@ from intandem.config import Settings, TaskPaths
 from intandem.notify import Notifier
 from intandem.opencode.client import OpenCodeClient, OpenCodeError
 from intandem.opencode.events import StreamRecorder
-from intandem.opencode.server import Version, require_supported
+from intandem.opencode.server import Version, aprobe_version, require_supported
+from intandem.opencode2.client import OpenCode2Client
 from intandem.supervisor.activity import ActivityTracker
 from intandem.supervisor.journal import Journal
 from intandem.supervisor.protected import ProtectedFiles
@@ -49,7 +50,7 @@ _FLUSH_ON = frozenset(
 
 
 async def pump_events(
-    client: OpenCodeClient,
+    client: OpenCodeBackend,
     supervisor: Supervisor,
     recorder: StreamRecorder,
     *,
@@ -76,28 +77,48 @@ async def pump_events(
         delay = min(delay * 2, max_delay)
 
 
+OpenCodeBackend = OpenCodeClient | OpenCode2Client
+"""A client for whichever OpenCode major the shared server runs."""
+
+
 async def _connect(
     stack: contextlib.AsyncExitStack, settings: Settings
-) -> tuple[OpenCodeLogin, OpenCodeClient]:
-    """A client for the shared OpenCode server, scoped to this task's directory."""
+) -> tuple[OpenCodeLogin, OpenCodeBackend, Version]:
+    """A client for the shared OpenCode server, scoped to this task's directory.
+
+    The server's own report decides which API to speak, so a host upgraded
+    from 1.x to 2.x between two runs is driven correctly by the next one.
+    """
     if not (settings.opencode_url and settings.opencode_password):
         raise ValueError("a task needs the shared OpenCode server: opencode_url and its password")
     password = settings.opencode_password.get_secret_value()
-    client = await stack.enter_async_context(
-        OpenCodeClient(settings.opencode_url, password, directory=str(settings.task_dir))
-    )
+    async with httpx.AsyncClient(auth=("opencode", password), timeout=10.0) as probe:
+        try:
+            version = require_supported(await aprobe_version(probe, settings.opencode_url))
+        except httpx.HTTPError as exc:
+            raise OpenCodeError("GET", settings.opencode_url, None, str(exc)) from exc
+    directory = str(settings.task_dir)
+    client: OpenCodeBackend
+    if version.major == 2:
+        client = await stack.enter_async_context(
+            OpenCode2Client(settings.opencode_url, password, directory=directory)
+        )
+    else:
+        client = await stack.enter_async_context(
+            OpenCodeClient(settings.opencode_url, password, directory=directory)
+        )
     # Free this task's instance on the way out; the server is not ours to stop.
     stack.push_async_callback(_dispose, client)
-    return OpenCodeLogin(settings.opencode_url, password), client
+    return OpenCodeLogin(settings.opencode_url, password), client, version
 
 
-async def _dispose(client: OpenCodeClient) -> None:
+async def _dispose(client: OpenCodeBackend) -> None:
     with contextlib.suppress(OpenCodeError):
         await client.dispose()
 
 
 async def watch_host(
-    client: OpenCodeClient, journal: Journal, *, interval: float = 5.0, misses: int = 3
+    client: OpenCodeBackend, journal: Journal, *, interval: float = 5.0, misses: int = 3
 ) -> None:
     """Return once the shared server stops answering, which stops this supervisor.
 
@@ -125,7 +146,7 @@ class Task:
 
     settings: Settings
     paths: TaskPaths
-    client: OpenCodeClient
+    client: OpenCodeBackend
     supervisor: Supervisor
     recorder: StreamRecorder
     app: FastAPI
@@ -179,9 +200,7 @@ async def open_task(settings: Settings, *, token: str) -> AsyncGenerator[Task]:
     paths.ensure()
     with SupervisorLock(paths.lock):
         async with contextlib.AsyncExitStack() as stack:
-            login, client = await _connect(stack, settings)
-            # The host checked this when it started; a replaced host may differ.
-            version = require_supported(Version.parse((await client.health()).version))
+            login, client, version = await _connect(stack, settings)
 
             journal = Journal(paths.journal)
             notifier = Notifier(

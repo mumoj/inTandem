@@ -1,0 +1,52 @@
+{
+ "id": "frm_201a9ad860016Hga3U4sQfI2Bt",
+ "sessionID": "ses_dfe565834ffeE34EGj1b5CEhqM",
+ "title": "Questions",
+ "metadata": {
+  "kind": "question",
+  "tool": {
+   "messageID": "msg_201a9ad2c001L7b5Az8I79MCzL",
+   "id": "call_1"
+  }
+ },
+ "fields": [
+  {
+   "key": "q0",
+   "title": "Tone",
+   "description": "Formal or informal greeting?",
+   "type": "string",
+   "options": [
+    {
+     "value": "Formal",
+     "label": "Formal",
+     "description": "Good day"
+    },
+    {
+     "value": "Informal",
+     "label": "Informal",
+     "description": "Hi"
+    }
+   ],
+   "custom": true
+  },
+  {
+   "key": "q1",
+   "title": "Extras",
+   "description": "Which extras?",
+   "type": "multiselect",
+   "options": [
+    {
+     "value": "Emoji",
+     "label": "Emoji",
+     "description": "x"
+    },
+    {
+     "value": "Name",
+     "label": "Name",
+     "description": "y"
+    }
+   ],
+   "custom": true
+  }
+ ]
+}

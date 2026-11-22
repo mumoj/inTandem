@@ -96,6 +96,38 @@ def _chunk(delta: dict[str, Any], finish: str | None = None) -> str:
     return f"data: {json.dumps(payload)}\n\n"
 
 
+# OpenCode 2 renamed a tool and an argument that the scripts use, in 1.x terms.
+_RENAMED_TOOLS = {"bash": "shell"}
+_RENAMED_ARGUMENTS = {"filePath": "path"}
+
+
+def _fit(
+    name: str, arguments: dict[str, Any], tools: list[dict[str, Any]]
+) -> tuple[str, dict[str, Any]]:
+    """A 1.x tool call in the terms of the tools this request offers.
+
+    Scripts stay written once: the call is fitted to whichever OpenCode sent
+    the request, read from the tools' own names and parameters.
+    """
+    offered = {
+        tool["function"]["name"]: tool["function"].get("parameters", {}).get("properties", {})
+        for tool in tools
+        if "function" in tool
+    }
+    if name not in offered and _RENAMED_TOOLS.get(name) in offered:
+        name = _RENAMED_TOOLS[name]
+    parameters = offered.get(name, {})
+    fitted = {
+        (
+            _RENAMED_ARGUMENTS[key]
+            if key not in parameters and _RENAMED_ARGUMENTS.get(key) in parameters
+            else key
+        ): value
+        for key, value in arguments.items()
+    }
+    return name, fitted
+
+
 def build_app(script: Script) -> FastAPI:
     app = FastAPI()
 
@@ -116,6 +148,7 @@ def build_app(script: Script) -> FastAPI:
                 arguments = step.arguments
                 if callable(arguments):
                     arguments = arguments(messages)
+                name, arguments = _fit(step.name, arguments, body.get("tools", []))
                 if step.say:
                     yield _chunk({"role": "assistant", "content": step.say})
                 yield _chunk(
@@ -125,7 +158,7 @@ def build_app(script: Script) -> FastAPI:
                                 "index": 0,
                                 "id": f"call_{len(script.requests)}",
                                 "type": "function",
-                                "function": {"name": step.name, "arguments": json.dumps(arguments)},
+                                "function": {"name": name, "arguments": json.dumps(arguments)},
                             }
                         ]
                     }

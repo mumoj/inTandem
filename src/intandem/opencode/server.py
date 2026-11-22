@@ -1,9 +1,10 @@
 """Which ``opencode serve`` inTandem can drive, and where to find it.
 
-OpenCode 2 replaced the server API this package targets, and its installer
-replaces the 1.x binary in place. One upgrade on the host would otherwise turn
-every call into a 404 with no hint why, so the shared host checks the version
-in its own health report before any task attaches to it.
+OpenCode 1.x and 2.x serve entirely different APIs from the same command, and
+2.x's installer replaces a 1.x binary in place. So the version is read from
+the running server, never assumed: 1.x answers ``/global/health``, 2.x
+``/api/info``, and each gets its own client. Any other major is refused before
+a task attaches, rather than failing on every call with a 404.
 """
 
 from __future__ import annotations
@@ -12,9 +13,12 @@ import re
 import shutil
 import socket
 from dataclasses import dataclass
-from pathlib import Path
 
-SUPPORTED_MAJOR = 1
+import httpx
+
+from intandem.opencode import install as installer
+
+SUPPORTED_MAJORS = (1, 2)
 _VERSION = re.compile(r"(\d+)\.(\d+)\.(\d+)")
 
 
@@ -41,23 +45,55 @@ class Version:
 
 
 def require_supported(version: Version) -> Version:
-    if version.major != SUPPORTED_MAJOR:
+    if version.major not in SUPPORTED_MAJORS:
+        majors = " and ".join(f"{major}.x" for major in SUPPORTED_MAJORS)
         raise UnsupportedVersionError(
-            f"OpenCode {version} is not supported: inTandem speaks the OpenCode "
-            f"{SUPPORTED_MAJOR}.x server API, which OpenCode 2 replaced. "
-            "Install the 1.x line with `npm i -g opencode-ai@1`."
+            f"OpenCode {version} is not supported: inTandem speaks the OpenCode {majors} "
+            "server APIs. Install a supported release with `opencode upgrade 2.3.2`."
         )
     return version
 
 
-def resolve_binary(name: str) -> str:
-    """An absolute path to the OpenCode binary, or a clear error."""
+def probe_version(http: httpx.Client, url: str) -> Version | None:
+    """The version a running server reports, or ``None`` if it does not answer yet."""
+    for path in ("/global/health", "/api/info"):
+        response = http.get(f"{url}{path}")
+        if response.is_success and _is_json(response):
+            return Version.parse(str(response.json()["version"]))
+    return None
+
+
+async def aprobe_version(http: httpx.AsyncClient, url: str) -> Version:
+    """``probe_version`` for a server that is known to be up. Raises if it is not."""
+    for path in ("/global/health", "/api/info"):
+        response = await http.get(f"{url}{path}")
+        if response.is_success and _is_json(response):
+            return Version.parse(str(response.json()["version"]))
+    raise UnsupportedVersionError(f"{url} answers neither the OpenCode 1.x nor the 2.x API")
+
+
+def _is_json(response: httpx.Response) -> bool:
+    # 2.x answers unknown paths, /global/health among them, with its web app's HTML.
+    return response.headers.get("content-type", "").startswith("application/json")
+
+
+def resolve_binary(name: str, *, install: bool = True) -> str:
+    """An absolute path to the OpenCode binary, installing it if there is none.
+
+    Only the default name is installed: a custom ``name`` is someone's choice of
+    binary, and a missing one is a mistake to report, not to paper over.
+    """
     found = shutil.which(name)
     if found:
         return found
-    fallback = Path.home() / ".opencode" / "bin" / "opencode"
+    fallback = installer.install_dir() / "opencode"
     if name == "opencode" and fallback.is_file():
         return str(fallback)
+    if name == "opencode" and install:
+        try:
+            return str(installer.install())
+        except installer.InstallError as exc:
+            raise FileNotFoundError(f"OpenCode is not installed and could not be: {exc}") from exc
     raise FileNotFoundError(f"OpenCode binary {name!r} not found on PATH")
 
 

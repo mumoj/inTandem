@@ -29,9 +29,10 @@ Identifier = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9][A-Za-z0-9._
 Text = Annotated[str, StringConstraints(max_length=60_000), AfterValidator(_not_blank)]
 
 # OpenCode request ids are a type prefix and an opaque token. Pinning that shape
-# keeps a caller-supplied id from reaching OpenCode as a path fragment.
+# keeps a caller-supplied id from reaching OpenCode as a path fragment. A 1.x
+# question is ``que_...``; 2.x asks through a form, ``frm_...``.
 PermissionId = Annotated[str, StringConstraints(pattern=r"^per[A-Za-z0-9_]+$")]
-QuestionId = Annotated[str, StringConstraints(pattern=r"^que[A-Za-z0-9_]+$")]
+QuestionId = Annotated[str, StringConstraints(pattern=r"^(que|frm)[A-Za-z0-9_]+$")]
 
 
 def _provider_model(value: str | None) -> str | None:

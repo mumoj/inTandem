@@ -27,11 +27,12 @@ import time
 from collections.abc import AsyncGenerator, Generator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, cast
 
 import anyio
 import anyio.from_thread
 import anyio.to_thread
+import httpx
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
@@ -342,17 +343,40 @@ def list_models() -> dict[str, Any]:
     """
     binary = os.environ.get("INTANDEM_OPENCODE_BIN", "opencode")
     models = _opencode_lines([binary, "models"])
-    agents: list[dict[str, str]] = []
-    for line in _opencode_lines([binary, "agent", "list"]):
-        name, _, mode = line.partition(" (")
-        if mode.endswith(")") and name.isidentifier():
-            agents.append({"name": name, "mode": mode[:-1]})
+    host = _CONNECTION.hub.opencode if _CONNECTION.hub is not None else None
+    agents: list[dict[str, str]]
+    if host is not None and host.version is not None and host.version.major == 2:
+        # 2.x dropped `opencode agent list`; its server lists them instead.
+        agents = _agents_from(host)
+    else:
+        agents = []
+        for line in _opencode_lines([binary, "agent", "list"]):
+            name, _, mode = line.partition(" (")
+            if mode.endswith(")") and name.isidentifier():
+                agents.append({"name": name, "mode": mode[:-1]})
     return {
         "models": [m for m in models if "/" in m],
         "agents": agents,
         "hint": "Primary agents (build, plan) run a spec; subagents are what the "
         "implementer can delegate to itself through its task tool.",
     }
+
+
+def _agents_from(host: SharedHost) -> list[dict[str, str]]:
+    """The visible agents an OpenCode 2 server offers, as ``{name, mode}``."""
+    try:
+        response = httpx.get(f"{host.url}/api/agent", auth=("opencode", host.password), timeout=30)
+        response.raise_for_status()
+        listed: object = response.json().get("data", [])
+    except (httpx.HTTPError, ValueError, AttributeError) as exc:
+        raise ToolError(f"could not list OpenCode's agents: {exc}") from exc
+    agents: list[dict[str, str]] = []
+    for item in cast(list[object], listed) if isinstance(listed, list) else []:
+        agent = cast(dict[str, object], item) if isinstance(item, dict) else {}
+        name, mode = agent.get("id"), agent.get("mode")
+        if isinstance(name, str) and isinstance(mode, str) and not agent.get("hidden"):
+            agents.append({"name": name, "mode": mode})
+    return agents
 
 
 def _opencode_lines(argv: list[str]) -> list[str]:

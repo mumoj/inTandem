@@ -17,6 +17,7 @@ from pydantic import SecretStr
 from intandem import mcp_server, worktrees
 from intandem.bridge.manifest import Manifest
 from intandem.config import TaskPaths
+from intandem.opencode.host import SharedHost
 
 URL = "http://127.0.0.1:41999"
 
@@ -140,6 +141,24 @@ async def test_the_server_lists_every_tool_with_instructions() -> None:
         "list_implementers",
     } <= tools
     assert "dashboard link" in (mcp_server.server.instructions or "")
+
+
+@respx.mock
+def test_an_opencode_2_server_lists_its_visible_agents(tmp_path: Path) -> None:
+    host = SharedHost("opencode", log_path=tmp_path / "host.log", records=tmp_path, port=4999)
+    respx.get("http://127.0.0.1:4999/api/agent").respond(
+        json={
+            "data": [
+                {"id": "build", "mode": "primary"},
+                {"id": "explore", "mode": "subagent"},
+                {"id": "title", "mode": "primary", "hidden": True},
+            ]
+        }
+    )
+    assert mcp_server._agents_from(host) == [  # pyright: ignore[reportPrivateUsage]
+        {"name": "build", "mode": "primary"},
+        {"name": "explore", "mode": "subagent"},
+    ]
 
 
 # ---- parallel implementers ------------------------------------------------------

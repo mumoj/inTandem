@@ -6,8 +6,16 @@ Install the development dependencies, then run the checks:
 uv sync
 uv run ruff check && uv run ruff format --check
 uv run pyright                    # strict type checking
-uv run pytest                     # unit tests, plus E2E tests when OpenCode 1.x is on PATH
+uv run pytest                     # unit tests, plus E2E tests when OpenCode is on PATH
 ```
+
+The E2E tests run against whichever OpenCode is on PATH, 1.x or 2.x. To run them against the
+other major, point `INTANDEM_TEST_OPENCODE` at its binary, for example a 2.x release unpacked
+somewhere outside PATH. The scripted model fits its tool calls to the tools the server offers
+(2.x renamed `bash` to `shell` and `filePath` to `path`), so one script serves both.
+
+The OpenCode 2 adapter's unit tests replay event streams recorded from a real 2.3.2 server
+(`tests/fixtures/opencode2`).
 
 The end-to-end tests start an actual `opencode serve` process with the scripted
 OpenAI-compatible model in `tests/scripted_llm.py`. The script controls the model's choices;

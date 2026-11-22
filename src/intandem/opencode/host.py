@@ -28,7 +28,7 @@ from pathlib import Path
 
 import httpx
 
-from intandem.opencode.server import Version, free_port, require_supported
+from intandem.opencode.server import Version, free_port, probe_version, require_supported
 from intandem.supervisor.state import write_private
 
 _PR_SET_PDEATHSIG = 1
@@ -80,7 +80,12 @@ class SharedHost:
         the owning process: its main thread.
         """
         self.log_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        env = {**os.environ, "OPENCODE_SERVER_PASSWORD": self.password}
+        # 1.x reads OPENCODE_SERVER_PASSWORD, 2.x prefers OPENCODE_PASSWORD.
+        env = {
+            **os.environ,
+            "OPENCODE_SERVER_PASSWORD": self.password,
+            "OPENCODE_PASSWORD": self.password,
+        }
         argv = [self.binary, "serve", "--hostname", "127.0.0.1", "--port", str(self.port)]
         on_fork = _die_with_parent if die_with_parent and sys.platform == "linux" else None
         with self.log_path.open("ab") as log:
@@ -109,14 +114,14 @@ class SharedHost:
                     self._failure = f"opencode serve exited with {self.process.returncode}"
                     break
                 with contextlib.suppress(httpx.HTTPError):
-                    response = http.get(f"{self.url}/global/health")
-                    if response.is_success:
-                        try:
-                            self.version = require_supported(
-                                Version.parse(response.json()["version"])
-                            )
-                        except (RuntimeError, KeyError, ValueError) as exc:
-                            self._failure = str(exc)
+                    try:
+                        version = probe_version(http, self.url)
+                        if version is not None:
+                            self.version = require_supported(version)
+                    except (RuntimeError, KeyError, ValueError) as exc:
+                        self._failure = str(exc)
+                        break
+                    if self.version is not None:
                         break
                 time.sleep(0.25)
             else:

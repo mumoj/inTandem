@@ -213,10 +213,11 @@ def test_version_parsing(text: str, expected: Version) -> None:
     assert Version.parse(text) == expected
 
 
-def test_opencode_2_is_refused_with_a_way_out() -> None:
+def test_opencode_1_and_2_are_supported_and_3_is_refused_with_a_way_out() -> None:
     assert require_supported(Version(1, 19, 3)) == Version(1, 19, 3)
-    with pytest.raises(UnsupportedVersionError, match="opencode-ai@1"):
-        require_supported(Version(2, 0, 6))
+    assert require_supported(Version(2, 3, 2)) == Version(2, 3, 2)
+    with pytest.raises(UnsupportedVersionError, match=r"opencode upgrade 2\.3\.2"):
+        require_supported(Version(3, 0, 0))
 
 
 def test_model_ref_needs_a_provider() -> None:
