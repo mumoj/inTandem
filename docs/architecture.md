@@ -20,7 +20,7 @@ sequenceDiagram
     actor P as Planner<br/>(Claude Code / Codex)
     actor H as You<br/>(dashboard)
     participant T as inTandem<br/>(MCP, bridge, supervisor)
-    participant B as Implementer backend<br/>(OpenCode / Claude Code)
+    participant B as Implementer backend<br/>(OpenCode / Claude Code / Antigravity)
     participant M as Implementer model
 
     rect rgba(47, 111, 219, 0.12)
@@ -78,14 +78,17 @@ Each planner session has one inTandem hub. `inTandem mcp` runs that hub for an M
   - `intandem/opencode/` — OpenCode 1.x HTTP/SSE adapter, shared host lifecycle, and checksum-verified installer.
   - `intandem/opencode2/` — OpenCode 2.x HTTP/SSE adapter (stateful tool-call translator, forms-to-questions mapping, `{action, resource, effect}` rules).
   - `intandem/claude/` — Claude Code adapter over the optional `claude-agent-sdk` (`PreToolUse` hook guard, push-to-pull pending futures, per-session CLI process).
+  - `intandem/antigravity/` — Antigravity CLI adapter: a stdlib JSON-RPC 2.0 ACP client over `agy acp`'s stdio (`session/request_permission` guard, one agent process per task).
 - **Lazy shared OpenCode server.** OpenCode tasks share one `opencode serve` process per hub,
   scoped to separate directories (`directory` on 1.x, `location[directory]` on 2.x). The host
   starts lazily on the first OpenCode task and probes `/global/health` then `/api/info` to select
-  the 1.x or 2.x client. Claude-only sessions never start or download OpenCode.
+  the 1.x or 2.x client. Claude Code and Antigravity sessions never start or download OpenCode.
 - **Per-session Claude Code CLI.** Each Claude Code session spawns the user's own `claude` CLI
   inside the task directory via the Agent SDK, using `claude auth login` rather than an API key.
   Starting a new spec disconnects the previous session's CLI while keeping its transcript and
   totals readable.
+- **One `agy acp` per Antigravity task.** The backend starts the user's signed-in `agy` as an ACP
+  agent in the task directory and opens one ACP session per spec, closing the previous one.
 - **Cleanup is tied to the hub.** On Linux, `PR_SET_PDEATHSIG` stops a shared OpenCode host if
   the hub dies without cleanup, including after `kill -9`. On other platforms, the next hub reaps
   any orphaned host recorded under `hosts/`. Closing the hub disconnects every active backend.
@@ -107,7 +110,8 @@ work from affecting a later task.
 1. *Pre-edit backend guard.* OpenCode enforces protected globs via an ordered ruleset (last match
    wins: broad allows first, then `ask` per protected pattern; subagent sessions receive `deny`
    appended to their own rules). Claude Code enforces them via a fail-closed `PreToolUse` hook
-   (`on_failure="block"`) backed by `can_use_tool`, covering both main and subagent tool calls.
+   (`on_failure="block"`) backed by `can_use_tool`, covering both main and subagent tool calls. Antigravity parks every protected edit's
+   `session/request_permission`, even unattended, and never picks agy's `allow_always`.
 2. *Continuous content-hash check.* The supervisor snapshots SHA-256 hashes of protected patterns
    and checks them on every tick and on `file.edited` / turn-end events. Edits that bypass tool
    permissions (such as a shell redirect) abort the turn and block further specs or directives
@@ -153,7 +157,7 @@ Files containing tokens, prompts, or model output are created with mode `0600`.
   stack closes its backend. Other tasks on the hub continue running.
 - **Pull-shaped protocol over push and pull harnesses.** `ImplementerBackend` exposes pull methods
   (`permissions()`, `questions()`, `events()`). HTTP backends query their server; push backends
-  (Claude Agent SDK, and Codex in the future) park pending futures in a map and enqueue events,
+  (Claude Agent SDK, Antigravity's ACP, and Codex in the future) park pending futures in a map and enqueue events,
   keeping the supervisor free of callback re-entrancy.
 - **Shared utilities live in `intandem/backend/`.** `jsonpath.py` (typed dict traversal),
   `stream.py` (`StreamRecorder`), and `diff.py` (worktree `git diff`) are shared across adapters

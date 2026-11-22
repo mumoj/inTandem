@@ -122,6 +122,47 @@ Optional `claude` extra (`claude-agent-sdk>=0.2.187,<0.3`), imported lazily insi
     SDK source and unit tests; `tests/test_claude_e2e.py` (`INTANDEM_E2E_CLAUDE=1`) smoke-tests a
     live turn and protected edit.
 
+## Antigravity CLI (`intandem/antigravity/`) — as built
+
+No extra dependency: a stdlib asyncio JSON-RPC 2.0 client over `agy acp`'s stdio (ACP, the
+Agent Client Protocol, newline-delimited JSON). Picked via `harness="antigravity"`,
+`inTandem serve --harness antigravity` (`--antigravity-bin`), or `INTANDEM_HARNESS=antigravity`.
+Wire shapes were recorded from `agy acp` 1.5.14.
+
+- **Transport (`acp.py`).** `StdioACPTransport` runs `[cli, "acp"]` in the task directory with a
+  64 MiB line limit, keeps the last 200 stderr lines for crash messages, answers agent requests
+  in tasks of their own, and delivers notifications inline (in order). Tests inject an in-memory
+  `ACPTransport` through `TransportFactory`.
+- **One process per backend** (one per task), started by `health()` at task start and closed on
+  `__aexit__`. A dead process fails `health()` (so `watch_host` stops the task); the next
+  `create_session` starts a fresh one.
+- **Mapping:**
+  - `health`: `initialize {protocolVersion: 1, clientCapabilities: {}}` → `agentInfo` version.
+  - `create_session`: `session/new {cwd, mcpServers: []}`; the ACP `sessionId` is inTandem's id.
+    Records `git_head`, the session's modes and current model, and `session/close`s older ones
+    (their transcripts and totals stay readable).
+  - `prompt`: bare agy model IDs or `antigravity/`/`google/<model>` → `session/set_model`; other
+    providers are refused. `agent` is an agy mode (`default`, `accept-edits`, `auto`, `plan`) →
+    `session/set_mode`. `session/prompt` runs in a background task; its result's `usage`
+    (`thoughtTokens` → `reasoning`, `cachedReadTokens`/`cachedWriteTokens` → `cache`) is added up,
+    then `IDLE` (or `ERROR`, aborted on `stopReason: "cancelled"`).
+  - `abort`: `session/cancel` notification, and pending permissions answered `cancelled`.
+  - `events`: `agent_thought_chunk`/`agent_message_chunk` → `PART_DELTA` (`reasoning`/`text`),
+    `tool_call`/`tool_call_update` → tool `PART_UPDATED`, plus `FILE_EDITED` when an edit
+    completes; other updates are `OTHER`.
+  - `permissions`: `session/request_permission`. A protected edit (`kind: "edit"` or an edit tool
+    name; paths from `locations`, `rawInput`, `args`, diff content) is always parked, even
+    unattended. Other tools are allowed at once when unattended, otherwise parked. Replies pick
+    `allow_once` (also for "always", which inTandem remembers itself: an agent-side
+    `allow_always` could wave a later protected edit through) or `reject_once`. Metadata carries
+    `diff` and `command` previews.
+  - `questions`: none (ACP has no question request). `guard_subagent`: no-op.
+- **Limits:** modes such as `auto` and `accept-edits` may stop agy asking before edits, and shell
+  writes never ask; the content hash (run at once on `FILE_EDITED`) catches both. A
+  rejection's message is not passed to the agent (ACP has no field for it). Sessions do not
+  survive a supervisor restart. `tests/test_antigravity_e2e.py` (`INTANDEM_E2E_ANTIGRAVITY=1`)
+  smoke-tests a live turn.
+
 ## Next: How Codex fits (not built yet)
 
 Checked against `codex-cli 0.154.0`, using `codex app-server generate-json-schema` and the

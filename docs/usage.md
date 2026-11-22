@@ -24,7 +24,8 @@ spec.
 
 If a task uses the `opencode` harness, the hub starts one shared `opencode serve` lazily on first
 use and shares it across OpenCode tasks. Tasks that use `harness="claude"` run their own `claude`
-CLI per session and never start or install OpenCode.
+CLI per session, and tasks that use `harness="antigravity"` run one `agy acp` each; neither starts
+or installs OpenCode.
 
 The MCP process and any child backends exist for the planner session. When the planner disconnects
 or exits, supervisors finish and preserve their evidence, then the hub shuts down. Task state
@@ -32,7 +33,7 @@ remains on disk and can be resumed in a later session.
 
 ## Harnesses, models, and subagents
 
-Each implementer picks a harness (`opencode` by default, or `claude`) on `start_implementer`,
+Each implementer picks a harness (`opencode` by default, `claude`, or `antigravity`) on `start_implementer`,
 `spawn_implementer`, `submit_spec`, or `inTandem serve --harness`, or globally via
 `INTANDEM_HARNESS`.
 
@@ -61,6 +62,17 @@ Each implementer picks a harness (`opencode` by default, or `claude`) on `start_
 - `list_models(harness="claude")` returns Claude model options without starting OpenCode.
 - Protected files are blocked before the edit runs by a fail-closed `PreToolUse` hook (which also
   covers Claude subagents), backed up by `can_use_tool` and the supervisor's content-hash monitor.
+
+### Antigravity CLI (`harness="antigravity"`)
+
+- Requires a signed-in `agy` on `PATH` (or `INTANDEM_ANTIGRAVITY_BIN` / `--antigravity-bin`).
+  inTandem speaks ACP to `agy acp` over stdio; no extra Python dependency.
+- `model` is a bare agy model ID (`gemini-4-neon-high`, `gemini-3.8-flash-low`,
+  `claude-sonnet-5-5-high`, ...) or `antigravity/<model>` / `google/<model>`.
+- `agent` is an agy mode: `default`, `accept-edits`, `auto` or `plan`. Unset keeps the current one.
+- `list_models(harness="antigravity")` runs `agy models` and lists the modes as agents.
+- A protected edit always stops for the planner, even unattended. In `auto` or `accept-edits` agy
+  may not ask before editing; the content-hash check (run as soon as an edit completes) catches it.
 
 ## Parallel implementers
 
@@ -134,6 +146,7 @@ To run a task without MCP, from a script or a shell-based planner:
 ```bash
 inTandem serve ~/work/my-task -m openrouter/qwen/qwen3-coder -p instruction.md
 inTandem serve ~/work/my-task --harness claude -m claude-sonnet-4-6 -p instruction.md
+inTandem serve ~/work/my-task --harness antigravity -m gemini-4-neon-high -p instruction.md
 ```
 
 In another shell:
@@ -209,8 +222,8 @@ Every `inTandem serve` option can also be set with an environment variable using
 
 | variable | default | |
 |---|---|---|
-| `INTANDEM_HARNESS` | `opencode` | implementer harness: `opencode` or `claude` |
-| `INTANDEM_MODEL` | harness default | `provider/model` for OpenCode; bare or `anthropic/<model>` for Claude |
+| `INTANDEM_HARNESS` | `opencode` | implementer harness: `opencode`, `claude` or `antigravity` |
+| `INTANDEM_MODEL` | harness default | `provider/model` for OpenCode; bare or `anthropic/<model>` for Claude; bare or `antigravity/<model>` for Antigravity |
 | `INTANDEM_PROTECTED` | `[]` | JSON list of globs, e.g. `'["instruction.md","docs/*.md"]'` |
 | `INTANDEM_NOTIFY_CMD`, `INTANDEM_NTFY_TOPIC` | off | alert delivery |
 | `INTANDEM_STALL_AFTER` | `720` | seconds of text without a tool call |
@@ -218,6 +231,7 @@ Every `inTandem serve` option can also be set with an environment variable using
 | `INTANDEM_STATE_ROOT` | `$XDG_STATE_HOME/intandem` | where task state lives |
 | `INTANDEM_OPENCODE_BIN` | `opencode` | the OpenCode binary (custom names are never auto-installed) |
 | `INTANDEM_CLAUDE_BIN` | `claude` | the Claude Code CLI binary for `harness="claude"` |
+| `INTANDEM_ANTIGRAVITY_BIN` | `agy` | the Antigravity CLI binary for `harness="antigravity"` |
 | `INTANDEM_NO_INSTALL` | unset | set to stop inTandem installing OpenCode when none is found |
 | `INTANDEM_WORKDIR` | the MCP server's working directory | the project `inTandem mcp` acts on by default |
 
@@ -227,8 +241,9 @@ Every `inTandem serve` option can also be set with an environment variable using
   and its fields are mapped into inTandem's question interface.
 - **Claude Code sessions** do not survive a supervisor restart: if the supervisor restarts mid-spec,
   it notices the old session is gone and redelivers the spec to a fresh CLI session.
-- **Shell writes to protected files** bypass tool-level edit guards in both OpenCode and Claude
-  Code; the supervisor's content-hash check catches them and aborts the turn.
+- **Antigravity sessions** do not survive a supervisor restart either; the spec is redelivered.
+- **Shell writes to protected files** bypass tool-level edit guards in OpenCode, Claude Code and
+  Antigravity; the supervisor's content-hash check catches them and aborts the turn.
 - A task has one active specification at a time. Run parallel work in separate worktrees.
 - `list_models` for OpenCode reports what OpenCode lists, not necessarily what the connected
   account can use. For example, a ChatGPT login may reject some OpenAI models; `wait` reports
