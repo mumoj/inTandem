@@ -772,6 +772,11 @@ async def test_full_stack_hub_bridge_and_supervisor_with_claude_backend(
 
             diff = (await http.get("/diff")).json()["files"]
             assert [f["file"] for f in diff] == ["hello.txt"]
+            patch_resp = await http.get("/diff/file", params={"path": "hello.txt"})
+            assert patch_resp.status_code == 200
+            assert "+hi" in patch_resp.json()["patch"]
+            bad = await http.get("/diff/file", params={"path": "../etc/passwd"})
+            assert bad.status_code == 400
             cost = (await http.get("/cost")).json()
             assert cost["total_cost"] == pytest.approx(0.12)
             assert cost["total_tokens"]["input"] == 50
@@ -779,6 +784,90 @@ async def test_full_stack_hub_bridge_and_supervisor_with_claude_backend(
             assert (await http.post("/finish")).status_code == 200
     finally:
         await hub.close()
+
+
+async def test_streaming_tool_prep_live_usage_and_observed_model(
+    backend: ClaudeCodeBackend, clients: list[FakeSDKClient]
+) -> None:
+    from claude_agent_sdk import StreamEvent, SystemMessage
+
+    from intandem.supervisor.activity import Activity, ActivityTracker
+
+    session_id, client = await started(backend, clients)
+    events = backend.events()
+
+    now = [100.0]
+    tracker = ActivityTracker(clock=lambda: now[0], quiet_after=30.0)
+    tracker.track(session_id)
+    tracker.turn_started()
+
+    # 1. system/init reports resolved model even when no --model was requested.
+    await client.inbox.put(
+        SystemMessage(subtype="init", data={"model": "claude-opus-5-5", "session_id": "s"})
+    )
+    # 2. content_block_start marks Write as preparing, and input_json_delta refreshes last_tool.
+    await client.inbox.put(
+        StreamEvent(
+            uuid="u1",
+            session_id="s",
+            event={
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": {"type": "tool_use", "id": "call_w", "name": "Write"},
+            },
+        )
+    )
+    await client.inbox.put(
+        StreamEvent(
+            uuid="u2",
+            session_id="s",
+            event={
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {"type": "input_json_delta", "partial_json": '{"file_path": "a.py"}'},
+            },
+        )
+    )
+    # 3. Assistant message mid-turn carries live usage before ResultMessage arrives.
+    usage = {"input_tokens": 10, "output_tokens": 40, "cache_read_input_tokens": 500}
+    await client.inbox.put(assistant(TextBlock(text="Working."), usage=usage))
+
+    seen = []
+    async with asyncio.timeout(5):
+        while len(seen) < 4:
+            ev = await anext(events)
+            if ev.type is EventType.STATUS:
+                continue
+            seen.append(ev)
+            if ev.type is EventType.PART_DELTA and ev.delta_field == "tool":
+                now[0] = 125.0
+            tracker.observe(ev)
+
+    assert any(ev.model == "claude-opus-5-5" for ev in seen)
+    assert any(
+        ev.type is EventType.PART_UPDATED
+        and ev.part is not None
+        and ev.part.tool == "Write"
+        and ev.part.running
+        for ev in seen
+    )
+    assert tracker.classify() is Activity.WORKING
+    assert tracker.describe().seconds_since_tool == 0
+
+    live_info = await backend.get_session(session_id)
+    assert live_info.tokens is not None
+    assert live_info.tokens.output == 40
+    assert live_info.tokens.cache.read == 500
+
+    # Once ResultMessage arrives, live_usage is replaced by authoritative turn totals.
+    turn_usage = {"input_tokens": 15, "output_tokens": 60}
+    await client.inbox.put(result(total_cost_usd=0.05, usage=turn_usage))
+    await eventually(lambda: not backend._sessions[session_id].busy)
+    final_info = await backend.get_session(session_id)
+    assert final_info.tokens is not None
+    assert final_info.tokens.input == 15
+    assert final_info.tokens.output == 60
+    assert final_info.tokens.cache.read == 0
 
 
 async def test_a_new_session_stops_the_last_ones_cli(

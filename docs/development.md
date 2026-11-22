@@ -29,6 +29,10 @@ All unit tests run offline with no external processes:
   `FakeSDKClient` using the real `claude-agent-sdk` message and permission dataclasses, covering
   streaming turns, `PreToolUse` protected-file guards, `AskUserQuestion`, aborts/connect races,
   dashboard diff/command metadata, git diffs, and full-stack hub/bridge integration.
+- **Antigravity (`tests/test_antigravity.py`)**: drives `AntigravityBackend` with an in-memory
+  `FakeAgent` ACP transport (wire shapes from `agy acp` 1.5.14) covering `session/update`
+  translation, usage, models and modes, `session/request_permission` guards, aborts, crashes,
+  and full-stack hub/bridge integration; a scripted Python agent exercises `StdioACPTransport`.
 
 ### OpenCode E2E tests (`tests/test_e2e.py`, `tests/test_hub.py`)
 
@@ -55,6 +59,16 @@ INTANDEM_E2E_CLAUDE=1 uv run pytest tests/test_claude_e2e.py -v
 
 This verifies a real turn creating a file and the `PreToolUse` guard blocking and rejecting an
 edit to a protected file.
+
+### Antigravity E2E smoke test (`tests/test_antigravity_e2e.py`)
+
+Opt-in because it runs on your own Antigravity sign-in:
+
+```bash
+INTANDEM_E2E_ANTIGRAVITY=1 uv run pytest tests/test_antigravity_e2e.py -v
+```
+
+This verifies a real `agy acp` turn creating a file and reporting token usage.
 
 ## Release
 

@@ -39,7 +39,7 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import TracebackType
-from typing import TYPE_CHECKING, Any, Self
+from typing import TYPE_CHECKING, Any, Self, cast
 
 from intandem.backend.diff import git_diff, git_head
 from intandem.backend.errors import BackendError, NotFoundError
@@ -123,6 +123,8 @@ class _Session:
     transcript: list[Message] = field(default_factory=list[Message])
     cost: float = 0.0
     tokens: TokenUsage = field(default_factory=TokenUsage)
+    live_usage: dict[str, TokenUsage] = field(default_factory=dict[str, TokenUsage])
+    """Per-message usage seen during the active turn, replaced by ``ResultMessage`` totals."""
 
 
 class ClaudeCodeBackend:
@@ -385,6 +387,11 @@ class ClaudeCodeBackend:
         if kind == "assistant":
             entry = translate.assistant_message(body, f"msg_{next(self._ids)}")
             session.transcript.append(entry)
+            if entry.info.tokens is not None:
+                key = dig_str(body, "message_id") or dig_str(body, "uuid") or entry.info.id
+                session.live_usage[key] = entry.info.tokens
+        elif kind == "user":
+            _attach_tool_results(session.transcript, body)
         elif kind == "result":
             session.busy = False
             cost = dig(body, "total_cost_usd")
@@ -394,6 +401,7 @@ class ClaudeCodeBackend:
             # Per turn in a streaming session, so these add up.
             turn = translate.token_usage(dig(body, "usage"))
             session.tokens = translate.add_usage(session.tokens, turn)
+            session.live_usage.clear()
         for event in session.translator.translate(body, aborting=session.aborting):
             self._emit(event)
         if kind == "result":
@@ -713,12 +721,15 @@ class ClaudeCodeBackend:
 
     @staticmethod
     def _info(session: _Session) -> Session:
+        tokens = session.tokens
+        for usage in session.live_usage.values():
+            tokens = translate.add_usage(tokens, usage)
         return Session.model_validate(
             {
                 "id": session.id,
                 "title": session.title,
                 "cost": session.cost,
-                "tokens": session.tokens,
+                "tokens": tokens,
                 "claude_session_id": session.sdk_session_id,
             }
         )
@@ -759,6 +770,43 @@ class ClaudeCodeBackend:
 def _command(tool_input: object) -> list[str]:
     command = dig_str(tool_input, "command")
     return [command] if command else []
+
+
+def _attach_tool_results(transcript: list[Message], body: dict[str, Any]) -> None:
+    """Attach ``tool_result`` status and output onto matching tool parts in ``transcript``."""
+    results: dict[str, tuple[str, str]] = {}
+    for block in dig_list(body, "content"):
+        if dig_str(block, "type") not in ("tool_result", "server_tool_result"):
+            continue
+        call_id = dig_str(block, "tool_use_id")
+        if not call_id:
+            continue
+        status = "error" if dig(block, "is_error") is True else "completed"
+        results[call_id] = (status, _result_text(dig(block, "content")))
+    if not results:
+        return
+    for message in reversed(transcript):
+        for part in message.parts:
+            if part.type == "tool" and part.call_id in results:
+                status, output = results.pop(part.call_id)
+                part.status = status
+                part.output = output
+        if not results:
+            return
+
+
+def _result_text(content: object) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        pieces: list[str] = []
+        for item in cast(list[object], content):
+            if isinstance(item, str):
+                pieces.append(item)
+            elif text := dig_str(item, "text"):
+                pieces.append(text)
+        return "\n".join(pieces)
+    return "" if content is None else translate.dumps(content)
 
 
 def _preview_metadata(tool: str, tool_input: object) -> dict[str, str]:

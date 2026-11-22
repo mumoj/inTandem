@@ -21,6 +21,7 @@ import contextlib
 import functools
 import logging
 import os
+import re
 import subprocess
 import sys
 import time
@@ -68,7 +69,9 @@ Loop:
    `model` (provider/model) and `agent`; list_models shows what is available. The
    implementer starts on first use in the current project; start_implementer only to
    set defaults or protected files. `harness="claude"` on start_implementer or
-   spawn_implementer runs Claude Code instead of OpenCode (models anthropic/<model>).
+   spawn_implementer runs Claude Code instead of OpenCode (models anthropic/<model>);
+   `harness="antigravity"` runs the Antigravity CLI, agy (bare agy model IDs; `agent`
+   is its mode: default, accept-edits, auto or plan).
 2. wait, and act on `reason` (`next_step` says what to do). On `timeout`, wait again.
 3. On `result`, review: the result is a claim. Check get_result's diff, read the
    files, run the tests yourself. Then correct (send_directive) or move on (next spec).
@@ -170,10 +173,12 @@ Name = Annotated[
     Field(description="Short implementer name: lower-case letters, digits, dashes."),
 ]
 Harness = Annotated[
-    Literal["opencode", "claude"] | None,
+    Literal["opencode", "claude", "antigravity"] | None,
     Field(
-        description="What runs the implementer: opencode (default), or claude for Claude "
-        "Code on the user's own `claude` login. claude takes anthropic/<model> and no agent."
+        description="What runs the implementer: opencode (default), claude for Claude "
+        "Code on the user's own `claude` login, or antigravity for the Antigravity CLI "
+        "(`agy acp`). claude takes anthropic/<model> and no agent; antigravity takes a "
+        "bare agy model ID and an agy mode as `agent`."
     ),
 ]
 REVIEW_CHARS = 40_000
@@ -238,18 +243,8 @@ def _stop(task_dir: Path, timeout: float = 30.0) -> bool:
 
 
 def _archive_state(task_dir: Path) -> Path | None:
-    """Move a finished implementer's state aside, keeping it as evidence.
-
-    State is keyed by directory, and a later implementer with the same name gets
-    the same directory: left in place, its specs and results would be taken for
-    the new one's.
-    """
-    root = TaskPaths.for_task(_state_root(), task_dir).root
-    if not root.exists():
-        return None
-    archive = _state_root() / "landed" / f"{root.name}-{time.strftime('%Y%m%d-%H%M%S')}"
-    archive.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    return root.rename(archive)
+    """Move a finished implementer's state aside, keeping it as evidence."""
+    return worktrees.archive_state(_state_root(), task_dir)
 
 
 def _running(task_dir: Path) -> Manifest | None:
@@ -367,6 +362,8 @@ def list_models(harness: Harness = None) -> dict[str, Any]:
             "(bare model names or anthropic/<model>; aliases like sonnet/opus also work). "
             "Leave `agent` unset.",
         }
+    if chosen == "antigravity":
+        return _antigravity_models()
     host: SharedHost | None = None
     if _CONNECTION.hub is not None:
         try:
@@ -399,6 +396,41 @@ def list_models(harness: Harness = None) -> dict[str, Any]:
         "hint": "Primary agents (build, plan) run a spec; subagents are what the "
         "implementer can delegate to itself through its task tool.",
     }
+
+
+ANTIGRAVITY_MODES = ("default", "accept-edits", "auto", "plan")
+
+
+def _antigravity_models() -> dict[str, Any]:
+    """``agy models``, one model ID per line, with agy's modes as the agents."""
+    binary = os.environ.get("INTANDEM_ANTIGRAVITY_BIN", "agy")
+    try:
+        done = subprocess.run(
+            [binary, "models"], capture_output=True, text=True, timeout=60, check=False
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise ToolError(f"could not run {binary}: {exc}") from exc
+    if done.returncode != 0:
+        raise ToolError(f"{binary} models failed: {done.stderr.strip()[:300]}")
+    return {
+        "harness": "antigravity",
+        "models": parse_antigravity_models(done.stdout),
+        "agents": [{"name": mode, "mode": "mode"} for mode in ANTIGRAVITY_MODES],
+        "hint": "The antigravity harness runs agy on its own sign-in. Pass a bare model ID "
+        "(or antigravity/<model>); `agent` picks agy's mode. Protected edits always stop "
+        "for you, but auto and accept-edits may skip agy's asking; the content hash "
+        "still catches them.",
+    }
+
+
+def parse_antigravity_models(stdout: str) -> list[str]:
+    """Model IDs from ``agy models``: the first token of each line, past any spinner."""
+    models: list[str] = []
+    for line in stdout.splitlines():
+        tokens = line.rsplit("\r", 1)[-1].split()
+        if tokens and re.fullmatch(r"[a-z0-9][a-z0-9._-]*", tokens[0]) and "-" in tokens[0]:
+            models.append(tokens[0])
+    return list(dict.fromkeys(models))
 
 
 def _agents_from(host: SharedHost) -> list[dict[str, str]]:

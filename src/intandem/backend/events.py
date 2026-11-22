@@ -85,7 +85,12 @@ class BackendEvent(BaseModel):
 
     part: PartUpdate | None = None
     delta_field: str | None = None
-    """``PART_DELTA``: which field grew, such as ``text``."""
+    """``PART_DELTA``: which field grew, such as ``text`` or ``tool``."""
+    delta: str = ""
+    """``PART_DELTA``: what was appended, when the harness sends it."""
+
+    model: str | None = None
+    """Resolved model name reported by the backend, e.g. from init or assistant messages."""
 
     native: dict[str, Any] = Field(default_factory=dict[str, Any])
     """The event as the harness sent it, for ``$INTANDEM_EVENT``."""

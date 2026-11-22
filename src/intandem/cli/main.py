@@ -165,9 +165,11 @@ def serve(
     ntfy_topic: Annotated[str | None, typer.Option(help="Opt-in ntfy push topic.")] = None,
     bridge_port: Annotated[int | None, typer.Option(help="Default: a free port.")] = None,
     harness: Annotated[
-        str | None, typer.Option(help="Implementer harness: opencode (default) or claude.")
+        str | None,
+        typer.Option(help="Implementer harness: opencode (default), claude or antigravity."),
     ] = None,
     claude_bin: Annotated[str | None, typer.Option(help="Default: claude on PATH.")] = None,
+    antigravity_bin: Annotated[str | None, typer.Option(help="Default: agy on PATH.")] = None,
     opencode_port: Annotated[int | None, typer.Option(help="Default: a free port.")] = None,
     opencode_bin: Annotated[str | None, typer.Option(help="Default: opencode on PATH.")] = None,
     verbose: Annotated[bool, typer.Option("--verbose", "-v")] = False,
@@ -192,6 +194,7 @@ def serve(
         "model": model,
         "harness": harness,
         "claude_bin": claude_bin,
+        "antigravity_bin": antigravity_bin,
         "protected": protect,
         "notify_cmd": notify_cmd,
         "ntfy_topic": ntfy_topic,

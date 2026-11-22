@@ -156,6 +156,8 @@ class ActivityTracker:
             self._observe_part(event.part, now)
         elif event.type is EventType.PART_DELTA and event.delta_field == "text":
             self.last_text = now
+        elif event.type is EventType.PART_DELTA and event.delta_field == "tool":
+            self.last_tool = now
         elif event.type in ASKED and event.request_id:
             self.pending.add(event.request_id)
         elif event.type in SETTLED and event.request_id:
