@@ -173,17 +173,21 @@ class Hub:
         paths = TaskPaths.for_task(self.state_root, task_dir)
         if task_dir in self._tasks:
             return Manifest.read(paths.manifest)
-        opencode = await self._ready_opencode()
         # Only what was asked for: an explicit None would hide INTANDEM_MODEL and
         # INTANDEM_PROTECTED, since pydantic-settings prefers arguments to the environment.
         chosen: dict[str, Any] = {"model": model, "protected": protect, **options}
         settings = Settings(
             task_dir=task_dir,
             state_root=self.state_root,
-            opencode_url=opencode.url,
-            opencode_password=SecretStr(opencode.password),
             **{key: value for key, value in chosen.items() if value is not None},
         )
+        if settings.harness == "opencode":
+            # Only OpenCode tasks wait for the shared server. TODO: the hub still
+            # starts it eagerly in ``start``, so a claude-only setup needs OpenCode too.
+            opencode = await self._ready_opencode()
+            password = SecretStr(opencode.password)
+            update = {"opencode_url": opencode.url, "opencode_password": password}
+            settings = settings.model_copy(update=update)
         ready: asyncio.Future[Manifest] = asyncio.get_running_loop().create_future()
         done = asyncio.create_task(self._run(settings, paths, ready))
         try:

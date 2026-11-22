@@ -26,9 +26,12 @@ import httpx
 from fastapi import FastAPI
 from pydantic import SecretStr
 
+from intandem.backend.errors import BackendError
 from intandem.backend.models import ModelRef
+from intandem.backend.protocol import ImplementerBackend
 from intandem.bridge.app import OpenCodeLogin, create_app
 from intandem.bridge.manifest import Manifest
+from intandem.claude.sdk import api_key_warning
 from intandem.config import Settings, TaskPaths
 from intandem.notify import Notifier
 from intandem.opencode.client import OpenCodeClient, OpenCodeError
@@ -49,7 +52,7 @@ _FLUSH_ON = frozenset(
 
 
 async def pump_events(
-    client: OpenCodeClient,
+    client: ImplementerBackend,
     supervisor: Supervisor,
     recorder: StreamRecorder,
     *,
@@ -70,7 +73,7 @@ async def pump_events(
                     # would wait behind it.
                     log.exception("event handler failed on %s", event.type)
             supervisor.journal.append("stream_closed")
-        except OpenCodeError as exc:
+        except BackendError as exc:
             supervisor.journal.append("stream_failed", error=str(exc), retry_in=delay)
         await asyncio.sleep(delay)
         delay = min(delay * 2, max_delay)
@@ -91,13 +94,33 @@ async def _connect(
     return OpenCodeLogin(settings.opencode_url, password), client
 
 
+async def make_backend(
+    stack: contextlib.AsyncExitStack, settings: Settings
+) -> tuple[ImplementerBackend, OpenCodeLogin | None]:
+    """The task's implementer backend for ``settings.harness``, and OpenCode's login if any.
+
+    The claude harness runs a ``claude`` CLI per session and needs no shared
+    server, so it has no login to hand the dashboard.
+    """
+    if settings.harness == "claude":
+        # Imported here: the claude extra is optional.
+        from intandem.claude.backend import ClaudeCodeBackend
+
+        backend = ClaudeCodeBackend(settings.task_dir, cli=settings.claude_bin)
+        await stack.enter_async_context(backend)
+        await backend.health()  # No CLI on PATH fails the start, not the first spec.
+        return backend, None
+    login, client = await _connect(stack, settings)
+    return client, login
+
+
 async def _dispose(client: OpenCodeClient) -> None:
     with contextlib.suppress(OpenCodeError):
         await client.dispose()
 
 
 async def watch_host(
-    client: OpenCodeClient, journal: Journal, *, interval: float = 5.0, misses: int = 3
+    client: ImplementerBackend, journal: Journal, *, interval: float = 5.0, misses: int = 3
 ) -> None:
     """Return once the shared server stops answering, which stops this supervisor.
 
@@ -111,7 +134,7 @@ async def watch_host(
         try:
             await client.health()
             missed = 0
-        except OpenCodeError:
+        except BackendError:
             missed += 1
     journal.append("host_lost", missed=missed)
 
@@ -125,12 +148,13 @@ class Task:
 
     settings: Settings
     paths: TaskPaths
-    client: OpenCodeClient
+    client: ImplementerBackend
     supervisor: Supervisor
     recorder: StreamRecorder
     app: FastAPI
-    login: OpenCodeLogin
-    version: Version
+    login: OpenCodeLogin | None
+    """``None`` for a harness with no OpenCode server, such as claude."""
+    version: Version | None
     stop: asyncio.Event
 
     @property
@@ -145,9 +169,9 @@ class Task:
             token=SecretStr(token),
             task_dir=str(self.settings.task_dir),
             state_dir=str(self.paths.root),
-            opencode_port=httpx.URL(self.login.url).port,
-            opencode_version=str(self.version),
-            opencode_password=SecretStr(self.login.password),
+            opencode_port=httpx.URL(self.login.url).port if self.login else None,
+            opencode_version=str(self.version) if self.version else None,
+            opencode_password=SecretStr(self.login.password) if self.login else None,
         )
 
     async def run_workers(self) -> None:
@@ -179,11 +203,17 @@ async def open_task(settings: Settings, *, token: str) -> AsyncGenerator[Task]:
     paths.ensure()
     with SupervisorLock(paths.lock):
         async with contextlib.AsyncExitStack() as stack:
-            login, client = await _connect(stack, settings)
+            client, login = await make_backend(stack, settings)
             # The host checked this when it started; a replaced host may differ.
-            version = require_supported(Version.parse((await client.health()).version))
+            version = (
+                require_supported(Version.parse((await client.health()).version))
+                if login is not None
+                else None
+            )
 
             journal = Journal(paths.journal)
+            if settings.harness == "claude" and (warning := api_key_warning()):
+                journal.append("billing_warning", detail=warning)
             notifier = Notifier(
                 log_path=paths.notifications,
                 task=settings.task_dir.name,

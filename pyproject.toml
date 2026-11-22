@@ -38,8 +38,16 @@ Homepage = "https://github.com/mumoj/inTandem"
 Documentation = "https://github.com/mumoj/inTandem/blob/main/docs/usage.md"
 Issues = "https://github.com/mumoj/inTandem/issues"
 
+[project.optional-dependencies]
+# The Claude Code implementer backend (harness="claude"). Tested with 0.2.187.
+claude = [
+    "claude-agent-sdk>=0.2.187,<0.3",
+]
+
 [dependency-groups]
 dev = [
+    # The claude extra, so its backend is type-checked and tested.
+    "claude-agent-sdk>=0.2.187,<0.3",
     "pyright>=1.1.390",
     "pytest>=8.3",
     "pytest-asyncio>=0.25",
