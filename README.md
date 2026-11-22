@@ -67,6 +67,22 @@ claude mcp add inTandem --scope user \
   -- inTandem mcp
 ```
 
+### Claude Code as the implementer
+
+An implementer can run on Claude Code instead of OpenCode, on your own Claude subscription.
+Install the `claude` extra and sign the `claude` CLI in:
+
+```bash
+uv tool install 'intandem[claude]'
+claude auth login               # your subscription; inTandem never uses an API key
+```
+
+Then ask the planner for `harness="claude"` on `start_implementer` or `spawn_implementer`
+(or set `INTANDEM_HARNESS=claude` for every task). Models are `anthropic/<model>`, such as
+`anthropic/claude-sonnet-4-5`, and `agent` isn't supported. If `ANTHROPIC_API_KEY` is set,
+the CLI bills that key instead of your subscription, and the journal says so. OpenCode still
+has to be installed for now, because the hub starts it at launch.
+
 ## Use the command line
 
 The command line exposes the same controls and can be used over SSH:

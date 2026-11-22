@@ -170,6 +170,65 @@ uv run pytest
 - `OpenCode2Backend` (see below), then `ClaudeCodeBackend` (Agent SDK),
   then `CodexBackend`.
 
+## Claude Code backend: as built
+
+`intandem/claude/` (`backend.py`, `translate.py`, `guard.py`, `sdk.py`), on
+`claude-agent-sdk` 0.2.187 (bundling Claude Code 2.1.330), checked against the
+SDK's installed source. Optional: the `claude` extra, imported lazily, so
+inTandem without it still works and `harness="claude"` fails with an install
+hint. Picked per implementer with `harness` on `start_implementer` /
+`spawn_implementer`, or `INTANDEM_HARNESS`. `runtime.make_backend(stack,
+settings)` builds the backend; a claude task never waits for the shared
+OpenCode server.
+
+**Auth.** Each session runs the user's own `claude` (found on PATH, passed as
+`cli_path`, not the SDK's bundled copy), so it uses `claude auth login`: the
+subscription. inTandem never sets `ANTHROPIC_API_KEY`. If it is set, the CLI
+bills that key instead, and the journal gets a `billing_warning`.
+
+| `ImplementerBackend` | Claude Agent SDK |
+|---|---|
+| `health` | `claude --version`, cached. No CLI on PATH is a `BackendError`, at task start |
+| `create_session(title, guard)` | Bookkeeping only: an inTandem id (`ses_<hex>`), plus a UUID passed as the SDK's `session_id`. Stops older sessions' CLIs (one spec at a time) |
+| `prompt(text, model, agent)` | Returns at once. A background task connects one `ClaudeSDKClient` per session (`cwd` = the task directory, `permission_mode="default"`), then `client.query(text)`. A changed model is `client.set_model`. `agent` set: `BackendError` |
+| `events` | One queue for the backend. `CONNECTED` first. Prompt → `STATUS busy`. `AssistantMessage` text/thinking → `PART_UPDATED` text/reasoning, `tool_use` → `PART_UPDATED` tool running. `tool_result` → tool finished, and `FILE_EDITED` after a successful Edit/Write/MultiEdit/NotebookEdit. `StreamEvent` text/thinking deltas → `PART_DELTA` text. `ResultMessage` → `STATUS idle`, then `IDLE`, or `ERROR` (`is_error`). A rejected `RateLimitEvent` → `STATUS retry` |
+| `abort` | `client.interrupt()`; the next result is `ERROR` with `aborted`. Pending requests of that session are refused first |
+| `permissions` / `reply_permission` | `can_use_tool` parks `per_<n>` in a pending map (permission = tool name, patterns = path or command) and awaits the reply. `always` allows that tool for the rest of the session |
+| `questions` / `reply_question` | `AskUserQuestion` reaches `can_use_tool`. It parks `que_<n>`; a reply allows the tool with `answers` (question text → labels joined by `, `) added to its input; a rejection denies it |
+| `messages` | A transcript the adapter keeps: each prompt, and each `AssistantMessage` with its text, reasoning and tool parts |
+| `get_session` | `cost` = the last `ResultMessage.total_cost_usd` (the CLI's running total for the session); tokens = sum of each result's `usage` (per turn in a streaming session) |
+| `diff` | `git diff --numstat` / `--name-status` against the commit at session start, plus untracked files as added |
+| `session_status` | busy from prompt until its `ResultMessage` |
+| `guard_subagent` | No-op: subagents run in the same CLI session, through the same hook and callback |
+
+**The guard is a `PreToolUse` hook.** The SDK says `can_use_tool` is only
+consulted when the CLI's own rules come out at "ask": a call allowed by the
+user's `permissions.allow` settings, or by a permission mode, never reaches it.
+A `PreToolUse` hook sees every call, subagents' included. So the hook checks
+Edit/Write/MultiEdit/NotebookEdit paths against `Guard.protected` (relative to
+the task, as `fnmatch` *or* the same `glob` the content hash uses, so new files
+count) and, on a match, parks the call as a permission and answers `allow` or
+`deny` itself once the planner replies. The matcher has a 7-day timeout and
+`on_failure="block"`, so a hook that fails or times out stops the edit.
+`always` on a protected edit allows that tool on those paths only.
+`can_use_tool` re-checks protected paths, then allows the rest when the guard
+is unattended, or parks it for the planner when it is not.
+
+**Limits.**
+
+- A shell command that writes a protected file is not an edit tool. The content
+  hash catches it after the fact, as it does for OpenCode.
+- Sessions don't survive a restart: the supervisor finds the session gone and
+  redelivers the spec to a new one. (A reconnect within one run resumes the
+  CLI session with `resume`.)
+- `AskUserQuestion` going through `can_use_tool`, the answer shape, and the
+  cost being a running total were read from the SDK and CLI, not tried live. The
+  opt-in smoke test (`INTANDEM_E2E_CLAUDE=1`) covers a turn and a protected
+  edit, not questions.
+- The hub still starts the shared OpenCode at launch, so OpenCode must be
+  installed even for claude-only use. `list_models` lists OpenCode's models.
+- No agents, and only `anthropic/` (or `claude/`) models.
+
 ## OpenCode 2: a new adapter, not a version bump
 
 OpenCode 2.0 rebuilt the server API from scratch ([migration guide](https://opencode.ai/docs/migrate-v1)),
