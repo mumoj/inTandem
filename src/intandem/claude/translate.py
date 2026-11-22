@@ -141,6 +141,8 @@ class Translator:
                 events = self._user(native)
             case "stream_event":
                 events = self._stream(native)
+            case "system":
+                events = self._system(native)
             case "result":
                 events = self._result(native, aborting=aborting)
             case "rate_limit_event":
@@ -149,10 +151,15 @@ class Translator:
                 pass
         if not events:
             events = [self._event(EventType.OTHER)]
+        model = dig_str(native, "model") if kind == "assistant" else None
+        if kind == "system" and dig_str(native, "subtype") == "init":
+            model = dig_str(native, "data", "model") or dig_str(native, "model")
         native_type = f"claude.{kind}"
         for index, event in enumerate(events):
             event.native_type = native_type
             event.native = native
+            if model and event.model is None:
+                event.model = model
             event.raw = (
                 dumps(native)
                 if index == 0
@@ -211,11 +218,34 @@ class Translator:
         return events
 
     def _stream(self, native: dict[str, Any]) -> list[BackendEvent]:
-        if dig_str(native, "event", "type") != "content_block_delta":
+        event_type = dig_str(native, "event", "type")
+        if event_type == "content_block_start":
+            block = dig(native, "event", "content_block")
+            if dig_str(block, "type") in ("tool_use", "server_tool_use"):
+                call_id = dig_str(block, "id") or ""
+                tool = dig_str(block, "name") or "tool"
+                part = PartUpdate(
+                    kind="tool",
+                    call_id=call_id,
+                    tool=tool,
+                    running=True,
+                    detail=f"{tool} (preparing)",
+                )
+                return [self._event(EventType.PART_UPDATED, part=part)]
             return []
-        if dig_str(native, "event", "delta", "type") not in ("text_delta", "thinking_delta"):
+        if event_type != "content_block_delta":
             return []
-        return [self._event(EventType.PART_DELTA, delta_field="text")]
+        delta_type = dig_str(native, "event", "delta", "type")
+        if delta_type in ("text_delta", "thinking_delta", "signature_delta"):
+            return [self._event(EventType.PART_DELTA, delta_field="text")]
+        if delta_type == "input_json_delta":
+            return [self._event(EventType.PART_DELTA, delta_field="tool")]
+        return []
+
+    def _system(self, native: dict[str, Any]) -> list[BackendEvent]:
+        if dig_str(native, "subtype") == "thinking_tokens":
+            return [self._event(EventType.PART_DELTA, delta_field="text")]
+        return []
 
     def _result(self, native: dict[str, Any], *, aborting: bool) -> list[BackendEvent]:
         idle = self._event(EventType.STATUS, status="idle")

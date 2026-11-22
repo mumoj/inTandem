@@ -10,6 +10,8 @@
     --bg: #f6f7f9; --panel: #ffffff; --ink: #1f2328; --muted: #59636e; --line: #d8dee4;
     --soft: #eef1f4; --accent: #2f6fdb; --work: #7a4fd0; --ok: #1a7f37; --warn: #9a6700;
     --alert: #c2410c; --bad: #cf222e;
+    --diff-add-bg: #e6ffec; --diff-add-num: #ccffd8; --diff-del-bg: #ffebe9; --diff-del-num: #ffd7d5;
+    --diff-hunk-bg: #ddf4ff; --diff-hunk-ink: #0969da;
     --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   }
   @media (prefers-color-scheme: dark) {
@@ -17,6 +19,9 @@
       --bg: #0d1117; --panel: #161b22; --ink: #e6edf3; --muted: #9198a1; --line: #30363d;
       --soft: #1f2630; --accent: #5b9bff; --work: #b18cf2; --ok: #4ccb6b; --warn: #d29922;
       --alert: #ff8a5c; --bad: #ff6b6b;
+      --diff-add-bg: rgba(46, 160, 67, 0.16); --diff-add-num: rgba(46, 160, 67, 0.28);
+      --diff-del-bg: rgba(248, 81, 73, 0.16); --diff-del-num: rgba(248, 81, 73, 0.28);
+      --diff-hunk-bg: rgba(56, 139, 253, 0.15); --diff-hunk-ink: #79c0ff;
     }
   }
   * { box-sizing: border-box; }
@@ -86,9 +91,48 @@
   .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 6px; vertical-align: 1px; background: var(--muted); }
   .k-spec { background: var(--accent); } .k-human { background: var(--alert); } .k-ok { background: var(--ok); }
   .k-bad { background: var(--bad); } .k-work { background: var(--work); }
-  .files { list-style: none; margin: 0; padding: 0; font-family: var(--mono); font-size: 12.5px; }
-  .files li { display: flex; gap: 10px; padding: 2px 0; }
-  .files .add { color: var(--ok); } .files .del { color: var(--bad); }
+  .files-bar { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 12px 0 6px; font-size: 12.5px; color: var(--muted); }
+  .files-bar .totals { font-family: var(--mono); display: flex; gap: 8px; align-items: center; }
+  .files-bar .add { color: var(--ok); font-weight: 600; }
+  .files-bar .del { color: var(--bad); font-weight: 600; }
+  .files { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+  .file-item { border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: var(--panel); }
+  .file-row {
+    width: 100%; display: flex; align-items: center; gap: 8px; padding: 7px 10px;
+    border: 0; border-radius: 0; background: var(--soft); color: var(--ink);
+    font-family: var(--mono); font-size: 12.5px; font-weight: 500; text-align: left; cursor: pointer;
+  }
+  .file-row:hover { filter: brightness(0.97); }
+  @media (prefers-color-scheme: dark) { .file-row:hover { filter: brightness(1.12); } }
+  .file-row .chev { width: 12px; color: var(--muted); flex-shrink: 0; }
+  .file-row .badge {
+    font-size: 10.5px; font-weight: 700; width: 18px; height: 18px; border-radius: 4px;
+    display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0;
+    background: var(--panel); border: 1px solid var(--line); color: var(--muted);
+  }
+  .file-row .badge.st-a { color: var(--ok); border-color: var(--ok); }
+  .file-row .badge.st-m { color: var(--accent); border-color: var(--accent); }
+  .file-row .badge.st-d { color: var(--bad); border-color: var(--bad); }
+  .file-row .path { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+  .file-row .stats-inline { display: inline-flex; gap: 6px; flex-shrink: 0; font-size: 12px; }
+  .file-row .add { color: var(--ok); } .file-row .del { color: var(--bad); }
+  .diff-body { border-top: 1px solid var(--line); overflow: auto; max-height: 460px; background: var(--panel); }
+  .diff-msg { padding: 10px 12px; color: var(--muted); font-size: 12.5px; font-style: italic; margin: 0; }
+  .diff-table { width: 100%; border-collapse: collapse; font-family: var(--mono); font-size: 12px; line-height: 1.45; }
+  .diff-table td { padding: 0 8px; vertical-align: top; }
+  .diff-table .ln {
+    width: 1%; min-width: 38px; text-align: right; color: var(--muted); user-select: none;
+    border-right: 1px solid var(--line); padding: 0 6px; opacity: 0.85;
+  }
+  .diff-table .code { white-space: pre; padding-left: 10px; }
+  .diff-table tr.d-add { background: var(--diff-add-bg); }
+  .diff-table tr.d-add .ln { background: var(--diff-add-num); }
+  .diff-table tr.d-del { background: var(--diff-del-bg); }
+  .diff-table tr.d-del .ln { background: var(--diff-del-num); }
+  .diff-table tr.d-hunk { background: var(--diff-hunk-bg); color: var(--diff-hunk-ink); }
+  .diff-table tr.d-hunk .ln { background: var(--diff-hunk-bg); color: var(--diff-hunk-ink); }
+  .diff-table tr.d-meta { color: var(--muted); background: var(--soft); }
+  .diff-trunc { padding: 6px 12px; font-size: 12px; color: var(--warn); background: var(--soft); border-top: 1px solid var(--line); }
   .empty { color: var(--muted); font-style: italic; }
   .banner { margin: 16px; padding: 12px 16px; border-radius: 10px; border: 1px solid var(--bad); color: var(--bad); background: var(--panel); }
   .hidden { display: none !important; }
@@ -137,6 +181,7 @@
     <section>
       <h2>Result and changes</h2>
       <div id="result"><p class="empty">No result for this spec yet.</p></div>
+      <div id="diff-bar" class="files-bar hidden"></div>
       <ul class="files" id="diff"></ul>
       <details id="spec-text-box" class="hidden"><summary>Spec text</summary><pre id="spec-text"></pre></details>
     </section>
@@ -343,15 +388,154 @@ async function refreshResult() {
   refreshDiff();
 }
 
-async function refreshDiff() {
+const openDiffs = new Set();
+const diffCache = new Map();
+const diffMeta = new Map();
+
+function renderPatchTable(patch, truncated) {
+  if (!patch || !patch.trim()) return el("p", { class: "diff-msg" }, "No textual diff available.");
+  const rows = [];
+  let oldLn = 0, newLn = 0;
+  for (const raw of patch.replace(/\r\n/g, "\n").split("\n")) {
+    if (raw.startsWith("diff --git ") || raw.startsWith("index ") || raw.startsWith("--- ") || raw.startsWith("+++ ") || raw.startsWith("new file ") || raw.startsWith("deleted file ")) {
+      continue;
+    }
+    const hunk = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@(.*)$/.exec(raw);
+    if (hunk) {
+      oldLn = parseInt(hunk[1], 10);
+      newLn = parseInt(hunk[2], 10);
+      rows.push(el("tr", { class: "d-hunk" },
+        el("td", { class: "ln" }, "…"),
+        el("td", { class: "ln" }, "…"),
+        el("td", { class: "code" }, raw)));
+    } else if (raw.startsWith("+")) {
+      rows.push(el("tr", { class: "d-add" },
+        el("td", { class: "ln" }, ""),
+        el("td", { class: "ln" }, String(newLn++)),
+        el("td", { class: "code" }, raw)));
+    } else if (raw.startsWith("-")) {
+      rows.push(el("tr", { class: "d-del" },
+        el("td", { class: "ln" }, String(oldLn++)),
+        el("td", { class: "ln" }, ""),
+        el("td", { class: "code" }, raw)));
+    } else if (raw.startsWith("\\")) {
+      rows.push(el("tr", { class: "d-meta" },
+        el("td", { class: "ln" }, ""),
+        el("td", { class: "ln" }, ""),
+        el("td", { class: "code" }, raw)));
+    } else if (oldLn > 0 || newLn > 0) {
+      const text = raw.startsWith(" ") ? raw : " " + raw;
+      rows.push(el("tr", {},
+        el("td", { class: "ln" }, String(oldLn++)),
+        el("td", { class: "ln" }, String(newLn++)),
+        el("td", { class: "code" }, text)));
+    } else if (raw) {
+      rows.push(el("tr", { class: "d-meta" },
+        el("td", { class: "ln" }, ""),
+        el("td", { class: "ln" }, ""),
+        el("td", { class: "code" }, raw)));
+    }
+  }
+  if (!rows.length) return el("p", { class: "diff-msg" }, "Empty file.");
+  return el("div", {},
+    el("table", { class: "diff-table" }, el("tbody", {}, rows)),
+    truncated ? el("div", { class: "diff-trunc" }, "Diff truncated for browser display.") : null);
+}
+
+async function loadFileDiff(path, body, force) {
+  const cached = !force && diffCache.get(path);
+  if (cached) {
+    body.replaceChildren(renderPatchTable(cached.patch, cached.truncated));
+    return;
+  }
+  body.replaceChildren(el("p", { class: "diff-msg" }, "Loading diff…"));
+  try {
+    const data = await api("/diff/file?path=" + encodeURIComponent(path));
+    diffCache.set(path, data);
+    if (openDiffs.has(path)) body.replaceChildren(renderPatchTable(data.patch, data.truncated));
+  } catch (error) {
+    body.replaceChildren(el("p", { class: "diff-msg" }, "Could not load diff: " + error.message));
+  }
+}
+
+let lastFiles = [];
+
+function renderDiffList(files) {
+  lastFiles = files;
+  const bar = $("diff-bar");
   const list = $("diff");
+  const currentSet = new Set(files.map((f) => f.file).filter(Boolean));
+  for (const p of [...openDiffs]) { if (!currentSet.has(p)) openDiffs.delete(p); }
+  if (!files.length) {
+    bar.classList.add("hidden");
+    list.replaceChildren();
+    return;
+  }
+  const totalAdd = files.reduce((n, f) => n + (f.additions || 0), 0);
+  const totalDel = files.reduce((n, f) => n + (f.deletions || 0), 0);
+  const anyOpen = openDiffs.size > 0;
+  bar.classList.remove("hidden");
+  bar.replaceChildren(
+    el("span", { class: "totals" },
+      files.length + (files.length === 1 ? " file changed" : " files changed"),
+      el("span", { class: "add" }, "+" + totalAdd),
+      el("span", { class: "del" }, "-" + totalDel)),
+    el("button", {
+      type: "button",
+      onclick: () => {
+        if (anyOpen) openDiffs.clear();
+        else for (const f of lastFiles) if (f.file) openDiffs.add(f.file);
+        renderDiffList(lastFiles);
+      },
+    }, anyOpen ? "Collapse all" : "Expand all"));
+
+  const items = files.map((f) => {
+    const path = f.file || "?";
+    const status = (f.status || "modified")[0].toUpperCase();
+    const statusCls = status === "A" ? "st-a" : status === "D" ? "st-d" : "st-m";
+    const sig = `${f.additions || 0}:${f.deletions || 0}:${status}`;
+    const changed = diffMeta.get(path) !== sig;
+    diffMeta.set(path, sig);
+    if (changed) diffCache.delete(path);
+    const isOpen = openDiffs.has(path);
+    const chev = el("span", { class: "chev" }, isOpen ? "▾" : "▸");
+    const body = el("div", { class: "diff-body" + (isOpen ? "" : " hidden") });
+    const row = el("button", {
+      type: "button",
+      class: "file-row",
+      "aria-expanded": String(isOpen),
+      onclick: () => {
+        if (openDiffs.has(path)) {
+          openDiffs.delete(path);
+          chev.textContent = "▸";
+          row.setAttribute("aria-expanded", "false");
+          body.classList.add("hidden");
+        } else {
+          openDiffs.add(path);
+          chev.textContent = "▾";
+          row.setAttribute("aria-expanded", "true");
+          body.classList.remove("hidden");
+          loadFileDiff(path, body, false);
+        }
+      },
+    },
+      chev,
+      el("span", { class: "badge " + statusCls, title: f.status || "modified" }, status),
+      el("span", { class: "path" }, path),
+      el("span", { class: "stats-inline" },
+        el("span", { class: "add" }, "+" + (f.additions || 0)),
+        el("span", { class: "del" }, "-" + (f.deletions || 0))));
+    if (isOpen) loadFileDiff(path, body, changed);
+    return el("li", { class: "file-item" }, row, body);
+  });
+  list.replaceChildren(...items);
+}
+
+async function refreshDiff() {
   try {
     const d = await api("/diff");
-    list.replaceChildren(...d.files.map((f) => el("li", {},
-      el("span", { class: "add" }, "+" + (f.additions || 0)),
-      el("span", { class: "del" }, "-" + (f.deletions || 0)),
-      el("span", {}, f.file || "?"))));
-  } catch { list.replaceChildren(); }
+    renderDiffList(d.files);
+  } catch { renderDiffList([]); }
 }
 
 async function refreshMessages() {
@@ -371,8 +555,11 @@ async function refreshMessages() {
 async function refreshCost() {
   try {
     const c = await api("/cost");
-    const tokens = c.total_tokens.input + c.total_tokens.output;
-    $("cost").textContent = "$" + c.total_cost.toFixed(4) + " · " + Math.round(tokens / 1000) + "k tok";
+    const t = c.total_tokens;
+    const tokens = (t.input || 0) + (t.output || 0) + (t.reasoning || 0)
+      + ((t.cache && t.cache.read) || 0) + ((t.cache && t.cache.write) || 0);
+    const label = tokens >= 1000 ? Math.round(tokens / 1000) + "k tok" : Math.round(tokens) + " tok";
+    $("cost").textContent = "$" + c.total_cost.toFixed(4) + " · " + label;
   } catch (error) { if (error instanceof Unauthorized) throw error; }
 }
 

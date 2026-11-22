@@ -123,6 +123,8 @@ class _Session:
     transcript: list[Message] = field(default_factory=list[Message])
     cost: float = 0.0
     tokens: TokenUsage = field(default_factory=TokenUsage)
+    live_usage: dict[str, TokenUsage] = field(default_factory=dict[str, TokenUsage])
+    """Per-message usage seen during the active turn, replaced by ``ResultMessage`` totals."""
 
 
 class ClaudeCodeBackend:
@@ -385,6 +387,9 @@ class ClaudeCodeBackend:
         if kind == "assistant":
             entry = translate.assistant_message(body, f"msg_{next(self._ids)}")
             session.transcript.append(entry)
+            if entry.info.tokens is not None:
+                key = dig_str(body, "message_id") or dig_str(body, "uuid") or entry.info.id
+                session.live_usage[key] = entry.info.tokens
         elif kind == "result":
             session.busy = False
             cost = dig(body, "total_cost_usd")
@@ -394,6 +399,7 @@ class ClaudeCodeBackend:
             # Per turn in a streaming session, so these add up.
             turn = translate.token_usage(dig(body, "usage"))
             session.tokens = translate.add_usage(session.tokens, turn)
+            session.live_usage.clear()
         for event in session.translator.translate(body, aborting=session.aborting):
             self._emit(event)
         if kind == "result":
@@ -713,12 +719,15 @@ class ClaudeCodeBackend:
 
     @staticmethod
     def _info(session: _Session) -> Session:
+        tokens = session.tokens
+        for usage in session.live_usage.values():
+            tokens = translate.add_usage(tokens, usage)
         return Session.model_validate(
             {
                 "id": session.id,
                 "title": session.title,
                 "cost": session.cost,
-                "tokens": session.tokens,
+                "tokens": tokens,
                 "claude_session_id": session.sdk_session_id,
             }
         )

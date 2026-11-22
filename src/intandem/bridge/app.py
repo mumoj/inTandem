@@ -34,6 +34,7 @@ from intandem.bridge.schemas import (
     DiffOut,
     DirectiveIn,
     DirectiveOut,
+    FilePatchOut,
     JournalOut,
     MessageOut,
     MessagesOut,
@@ -190,6 +191,17 @@ async def read_result(supervisor: SupervisorDep) -> ResultOut:
 @router.get("/diff")
 async def read_diff(supervisor: SupervisorDep) -> DiffOut:
     return DiffOut(files=await supervisor.diff())
+
+
+@router.get("/diff/file")
+async def read_file_diff(
+    supervisor: SupervisorDep, path: Annotated[str, Query(min_length=1, max_length=1024)]
+) -> FilePatchOut:
+    try:
+        patch, truncated = await supervisor.file_diff(path)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    return FilePatchOut(file=path, patch=patch, truncated=truncated)
 
 
 @router.get("/cost")

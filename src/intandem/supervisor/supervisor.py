@@ -32,6 +32,7 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
+from intandem.backend.diff import git_file_patch
 from intandem.backend.errors import BackendError, NotFoundError
 from intandem.backend.events import TURN_OVER, BackendEvent, EventType
 from intandem.backend.models import (
@@ -173,6 +174,7 @@ class Supervisor:
         self._mutex = asyncio.Lock()
         self._changed = asyncio.Condition()
         self._last_activity = Activity.IDLE
+        self._observed_model: str | None = None
         self._resync_needed = False
         self.closing = False
 
@@ -308,6 +310,7 @@ class Supervisor:
             self.journal.append("session_created", spec_id=spec_id, session_id=session.id)
             self.tracker.track(session.id)
             self._last_activity = Activity.IDLE
+            self._observed_model = None
             await self._deliver_spec(record, recovering=False)
         await self._notify_waiters()
         return record
@@ -487,6 +490,10 @@ class Supervisor:
     async def diff(self) -> list[FileDiff]:
         return await self.api.diff(self._require_current().session_id)
 
+    async def file_diff(self, file_path: str) -> tuple[str, bool]:
+        """Unified diff for one file in the task worktree."""
+        return await git_file_patch(self.task_dir, file_path)
+
     async def cost(self) -> CostReport:
         """Spend per spec, read from the backend's own per-session totals."""
         records = list(self.state.specs.values())
@@ -619,6 +626,8 @@ class Supervisor:
             await self._guard_subagent(child, event.child_policy)
         record = self.state.current
         mine = record is not None and event.session_id == record.session_id
+        if mine and event.model:
+            self._observed_model = event.model
         # A subagent waiting on a human is the spec waiting on a human.
         ours = record is not None and event.session_id in self.tracker.family
         if record is not None and ours:
@@ -769,7 +778,9 @@ class Supervisor:
     def _model_name(self, record: SpecRecord | None) -> str | None:
         if record is not None and record.model:
             return record.model
-        return self.model.qualified if self.model else None
+        if self.model is not None:
+            return self.model.qualified
+        return self._observed_model
 
     async def _session_contains(self, session_id: str, marker: str) -> bool:
         messages = await self.api.messages(session_id)

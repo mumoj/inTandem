@@ -158,3 +158,9 @@ class MessagesOut(BaseModel):
 
 class DiffOut(BaseModel):
     files: list[FileDiff]
+
+
+class FilePatchOut(BaseModel):
+    file: str
+    patch: str
+    truncated: bool = False
