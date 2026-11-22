@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import re
 import subprocess
 import sys
 from collections.abc import AsyncIterator, Callable
@@ -876,7 +877,8 @@ def test_serve_passes_the_antigravity_options(
     assert result.exit_code == 0, result.output
     [settings] = seen
     assert (settings.harness, settings.antigravity_bin) == ("antigravity", "/opt/agy")
-    help_text = CliRunner().invoke(app, ["serve", "--help"]).output
+    # GitHub Actions makes typer colour its help, splitting option names with escapes.
+    help_text = re.sub(r"\x1b\[[0-9;]*m", "", CliRunner().invoke(app, ["serve", "--help"]).output)
     assert "--antigravity-bin" in help_text
     assert "antigravity" in help_text
 

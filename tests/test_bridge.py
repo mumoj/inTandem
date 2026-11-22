@@ -239,9 +239,12 @@ def _init_linked_worktree(tmp_path: Path) -> tuple[Path, Path]:
     repo = tmp_path / "repo"
     repo.mkdir()
     worktrees.git(repo, "init", "-q", "-b", "main")
+    # Landing commits in the worktree, so it needs an identity: CI runners have none.
+    worktrees.git(repo, "config", "user.name", "t")
+    worktrees.git(repo, "config", "user.email", "t@t")
     (repo / "README.md").write_text("hello\n")
     worktrees.git(repo, "add", ".")
-    worktrees.git(repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "init")
+    worktrees.git(repo, "commit", "-qm", "init")
     wt = worktrees.create_worktree(repo, tmp_path / "state", "worker-a", None)
     (wt.path / "feature.py").write_text("x = 1\n")
     return repo, wt.path
