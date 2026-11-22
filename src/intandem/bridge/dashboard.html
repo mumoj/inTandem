@@ -50,7 +50,11 @@
   .pill::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
   .s-working { color: var(--work); } .s-idle { color: var(--muted); } .s-blocked { color: var(--alert); }
   .s-hung, .s-reasoning_stall { color: var(--warn); } .s-error, .s-protected_violation { color: var(--bad); }
-  .s-result { color: var(--ok); } .s-offline { color: var(--bad); }
+  .s-result { color: var(--ok); } .s-offline { color: var(--bad); } .s-stopped { color: var(--muted); }
+  .banner.info { border-color: var(--line); color: var(--ink); }
+  .banner.info b { font-weight: 650; }
+  body.stopped main { opacity: .92; }
+  body.stopped #abort, body.stopped #needs { display: none !important; }
   .s-working::before { animation: pulse 1.4s ease-in-out infinite; }
   @keyframes pulse { 50% { opacity: .25; } }
   .headline { font-size: 18px; font-weight: 600; margin: 0 0 4px; }
@@ -472,13 +476,36 @@ function renderResultCard(r) {
       r.spec_id ? el("code", {}, r.spec_id) : null),
     body,
     toggle,
-    el("p", { class: "result-claim" }, "Implementer's own claim — verify against the diff below or in the Review & merge tab."));
+    el("p", { class: "result-claim" }, claimNote()));
+}
+
+let lastResult = null;
+let stopped = false;
+let landedInfo = null;
+
+function claimNote() {
+  if (landedInfo && landedInfo.disposition === "merge") {
+    return "Implementer's claim. A human reviewed the diff and merged " + (landedInfo.branch || "the work")
+      + " into " + (landedInfo.merged_into || "the main worktree") + ".";
+  }
+  if (landedInfo && landedInfo.disposition === "discard") {
+    return "Implementer's claim. The work was reviewed and discarded; nothing was merged.";
+  }
+  if (stopped) {
+    return "Implementer's claim, as last reported. The supervisor has stopped, so this is a read-only snapshot; the planner's review is final.";
+  }
+  return "Implementer's own claim — verify against the diff below or in the Review & merge tab.";
+}
+
+function rerenderResult() {
+  if (lastResult) $("result").replaceChildren(renderResultCard(lastResult));
 }
 
 async function refreshResult() {
   const box = $("result");
   try {
     const r = await api("/result");
+    lastResult = r.result || null;
     box.replaceChildren(r.result
       ? renderResultCard(r.result)
       : el("p", { class: "empty" }, lastSpec ? "No result for this spec yet." : "No spec yet."));
@@ -728,6 +755,9 @@ function describe(e) {
     case "activity": return [e.current === "working" ? "work" : ["blocked", "hung", "reasoning_stall", "error"].includes(e.current) ? "bad" : "", "Now " + String(e.current).replace("_", " "), "was " + String(e.previous).replace("_", " ")];
     case "stream_event": return [e.stream_type === "session.error" ? "bad" : e.stream_type === "permission.asked" || e.stream_type === "question.asked" ? "human" : "", e.stream_type, e.summary || ""];
     case "session_missing": return ["bad", "Session lost; work redelivered", e.session_id || ""];
+    case "worktree_landed": return e.disposition === "merge"
+      ? ["ok", "Merged " + (e.branch || "worktree") + " into " + (e.merged_into || "main"), "reviewed by a human"]
+      : ["human", "Discarded " + (e.branch || "worktree"), "nothing merged"];
     default: return [/fail|error/.test(e.action) ? "bad" : "", e.action.replaceAll("_", " "), e.error || e.detail || ""];
   }
 }
@@ -736,6 +766,8 @@ function renderJournal(entries) {
   const list = $("timeline");
   const pinned = list.scrollTop < 8;
   for (const e of entries) {
+    if (e.action === "supervisor_stopped") stopped = true;
+    if (e.action === "worktree_landed") landedInfo = e;
     const [kind, title, detail] = describe(e);
     list.prepend(el("li", {},
       el("time", {}, e.time ? clock(e.time) : ""),
@@ -755,24 +787,60 @@ async function refreshJournal() {
 
 let ticks = 0;
 let offline = false;
+let failures = 0;
+let pollTimer = null;
+
+function enterStopped() {
+  if (pollTimer !== null) { clearInterval(pollTimer); pollTimer = null; }
+  stopped = true;
+  document.body.classList.add("stopped");
+  const merged = landedInfo && landedInfo.disposition === "merge";
+  const discarded = landedInfo && landedInfo.disposition === "discard";
+  setState("stopped", merged ? "merged" : discarded ? "discarded" : "stopped");
+  $("headline").textContent = merged
+    ? "Work merged. The supervisor has stopped."
+    : discarded ? "Work discarded. The supervisor has stopped." : "The supervisor has stopped.";
+  $("subline").textContent = "Everything below is the last snapshot this page saw; it no longer updates.";
+  $("running").textContent = "nothing";
+  $("abort").disabled = true;
+  $("needs").classList.add("hidden");
+  if (merged || discarded) $("review-tab").classList.add("hidden");
+  const banner = $("banner");
+  banner.className = "banner info";
+  banner.replaceChildren(
+    el("b", {}, merged ? "Merged into " + (landedInfo.merged_into || "main") + ". "
+      : discarded ? "Worktree discarded. " : "Supervisor stopped. "),
+    "This is a read-only snapshot. Its state and evidence stay on disk under the inTandem state directory; ",
+    el("code", {}, "inTandem log"), " and ", el("code", {}, "inTandem result"),
+    " still read them while a supervisor runs for this task.");
+  rerenderResult();
+}
 
 async function poll() {
+  if (stopped && pollTimer === null) return;
   try {
     renderOverview(await api("/overview"));
     await refreshJournal();
     if (ticks % 2 === 0) await refreshMessages();
     if (ticks % 5 === 0) refreshDiff();
     if (ticks % 10 === 0) refreshCost();
-    if (offline) { offline = false; $("banner").classList.add("hidden"); }
+    failures = 0;
+    if (offline) { offline = false; $("banner").className = "banner hidden"; }
+    if (landedInfo) enterStopped();
   } catch (error) {
     offline = true;
+    failures++;
     const banner = $("banner");
-    banner.classList.remove("hidden");
     if (error instanceof Unauthorized) {
+      banner.className = "banner";
       banner.textContent = "This link's token is missing or out of date. Ask the planner for the dashboard link again.";
       setState("offline", "no access");
       return;
     }
+    // The bridge goes away with its supervisor; a few misses in a row, or a stop
+    // already seen in the journal, mean it has stopped rather than hiccupped.
+    if (stopped || landedInfo || failures >= 3) { enterStopped(); return; }
+    banner.className = "banner";
     banner.textContent = "The supervisor is not answering. It may have stopped. Retrying…";
     setState("offline", "offline");
   }
@@ -807,7 +875,7 @@ if (!token) {
   history.replaceState(null, "", location.pathname);
   setupOpenCode();
   poll();
-  setInterval(() => { ticks++; poll(); }, 2000);
+  pollTimer = setInterval(() => { ticks++; poll(); }, 2000);
 }
 </script>
 </body>
