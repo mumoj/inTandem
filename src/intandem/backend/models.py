@@ -112,14 +112,22 @@ class Message(_Model):
 
 
 class ModelRef(_Model):
-    """A ``provider/model`` choice, split in two."""
+    """A model choice, optionally qualified as ``provider/model``."""
 
-    provider_id: str
+    provider_id: str | None = None
     model_id: str
+
+    @property
+    def qualified(self) -> str:
+        return f"{self.provider_id}/{self.model_id}" if self.provider_id else self.model_id
 
     @classmethod
     def parse(cls, value: str) -> Self:
-        provider, _, model = value.partition("/")
-        if not provider or not model:
-            raise ValueError(f"expected provider/model, got {value!r}")
-        return cls(provider_id=provider, model_id=model)
+        if not value or any(ch.isspace() for ch in value):
+            raise ValueError(f"invalid model name {value!r}")
+        if "/" in value:
+            provider, _, model = value.partition("/")
+            if not provider or not model:
+                raise ValueError(f"expected provider/model, got {value!r}")
+            return cls(provider_id=provider, model_id=model)
+        return cls(provider_id=None, model_id=value)

@@ -164,13 +164,17 @@ def serve(
     ] = None,
     ntfy_topic: Annotated[str | None, typer.Option(help="Opt-in ntfy push topic.")] = None,
     bridge_port: Annotated[int | None, typer.Option(help="Default: a free port.")] = None,
+    harness: Annotated[
+        str | None, typer.Option(help="Implementer harness: opencode (default) or claude.")
+    ] = None,
+    claude_bin: Annotated[str | None, typer.Option(help="Default: claude on PATH.")] = None,
     opencode_port: Annotated[int | None, typer.Option(help="Default: a free port.")] = None,
     opencode_bin: Annotated[str | None, typer.Option(help="Default: opencode on PATH.")] = None,
     verbose: Annotated[bool, typer.Option("--verbose", "-v")] = False,
 ) -> None:
     """Run the supervisor for TASK_DIR until `inTandem finish` or Ctrl-C.
 
-    It runs on a hub of its own with one OpenCode server, as under `inTandem mcp`.
+    It runs on a hub of its own, as under `inTandem mcp`.
     """
     from intandem.hub import serve as serve_hub  # deferred: client commands should start fast
 
@@ -186,6 +190,8 @@ def serve(
     overrides: dict[str, Any] = {
         "state_root": target.state_root,
         "model": model,
+        "harness": harness,
+        "claude_bin": claude_bin,
         "protected": protect,
         "notify_cmd": notify_cmd,
         "ntfy_topic": ntfy_topic,
@@ -202,8 +208,13 @@ def serve(
         _fail(CliError("; ".join(str(error["msg"]) for error in exc.errors()), 2))
 
     def ready(manifest: Manifest) -> None:
+        backend = (
+            f"OpenCode {manifest.opencode_version}"
+            if manifest.opencode_version
+            else settings.harness
+        )
         typer.echo(
-            f"bridge    {manifest.url}  (OpenCode {manifest.opencode_version})\n"
+            f"bridge    {manifest.url}  ({backend})\n"
             f"state     {manifest.state_dir}\n"
             f"dashboard {manifest.dashboard_url}",
             err=True,
@@ -500,10 +511,15 @@ def where(ctx: typer.Context) -> None:
     """The bridge URL, state directory and process of the target supervisor."""
     with bridge(ctx) as client:
         m = client.manifest
-        typer.echo(
-            f"bridge   {m.url}\nstate    {m.state_dir}\ntask     {m.task_dir}\n"
-            f"pid      {m.pid}\nopencode {m.opencode_version} on port {m.opencode_port}"
-        )
+        lines = [
+            f"bridge   {m.url}",
+            f"state    {m.state_dir}",
+            f"task     {m.task_dir}",
+            f"pid      {m.pid}",
+        ]
+        if m.opencode_port is not None:
+            lines.append(f"opencode {m.opencode_version} on port {m.opencode_port}")
+        typer.echo("\n".join(lines))
 
 
 @app.command()
@@ -536,7 +552,12 @@ def attach(
     if session_id:
         argv += ["--session", session_id]
     # The password goes in the environment, not argv, where `ps` would show it.
-    env = {**os.environ, "OPENCODE_SERVER_PASSWORD": password}
+    # 1.x reads OPENCODE_SERVER_PASSWORD, 2.x prefers OPENCODE_PASSWORD.
+    env = {
+        **os.environ,
+        "OPENCODE_SERVER_PASSWORD": password,
+        "OPENCODE_PASSWORD": password,
+    }
     try:
         os.execvpe(opencode_bin, argv, env)
     except FileNotFoundError:

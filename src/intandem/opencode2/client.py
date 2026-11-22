@@ -24,6 +24,7 @@ from httpx_sse import aconnect_sse
 
 from intandem.backend.events import BackendEvent
 from intandem.backend.guard import Guard
+from intandem.backend.jsonpath import dig, dig_list, dig_str
 from intandem.backend.models import (
     FileDiff,
     Health,
@@ -41,7 +42,6 @@ from intandem.backend.models import (
     TokenUsage,
 )
 from intandem.opencode.client import NotFoundError, OpenCodeError
-from intandem.opencode.jsonpath import dig, dig_list, dig_str
 from intandem.opencode2.rules import guard_to_rules, subagent_rules
 from intandem.opencode2.translate import Translator
 
@@ -152,7 +152,7 @@ class OpenCode2Client:
             cursor = dig_str(body, "cursor", "next")
             if not page or not cursor or (limit and len(found) >= limit):
                 break
-            params = {"cursor": cursor}
+            params = {"order": "desc", "cursor": cursor}
         if limit:
             found = found[:limit]
         return [_message(m) for m in reversed(found)]
@@ -163,6 +163,13 @@ class OpenCode2Client:
         """Queue a prompt and return at once, switching model and agent first."""
         base = f"/api/session/{session_id}"
         if model is not None:
+            if model.provider_id is None:
+                raise OpenCodeError(
+                    "POST",
+                    f"{base}/model",
+                    None,
+                    f"OpenCode requires provider/model, got {model.model_id!r}",
+                )
             ref = {"id": model.model_id, "providerID": model.provider_id}
             await self._request("POST", f"{base}/model", json={"model": ref})
         if agent is not None:
@@ -355,10 +362,12 @@ def _question(form: dict[str, Any]) -> QuestionRequest:
             )
             for o in dig_list(field, "options")
         ]
+        description = dig_str(field, "description") or ""
+        title = dig_str(field, "title") or ""
         questions.append(
             QuestionInfo(
-                question=dig_str(field, "description") or dig_str(field, "title") or "",
-                header=dig_str(field, "title") or "",
+                question=description or title,
+                header=title if description else "",
                 options=options,
                 multiple=dig_str(field, "type") == "multiselect",
             )

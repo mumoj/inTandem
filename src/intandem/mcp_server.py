@@ -39,6 +39,7 @@ from mcp.types import ToolAnnotations
 from pydantic import BaseModel, Field
 
 from intandem import worktrees
+from intandem.backend.errors import BackendError
 from intandem.bridge.manifest import Manifest
 from intandem.bridge.schemas import (
     DiffOut,
@@ -66,7 +67,8 @@ Loop:
    Spec IDs are immutable: a changed requirement is a new ID. Pick the implementer with
    `model` (provider/model) and `agent`; list_models shows what is available. The
    implementer starts on first use in the current project; start_implementer only to
-   set defaults or protected files.
+   set defaults or protected files. `harness="claude"` on start_implementer or
+   spawn_implementer runs Claude Code instead of OpenCode (models anthropic/<model>).
 2. wait, and act on `reason` (`next_step` says what to do). On `timeout`, wait again.
 3. On `result`, review: the result is a claim. Check get_result's diff, read the
    files, run the tests yourself. Then correct (send_directive) or move on (next spec).
@@ -167,6 +169,13 @@ Name = Annotated[
     str,
     Field(description="Short implementer name: lower-case letters, digits, dashes."),
 ]
+Harness = Annotated[
+    Literal["opencode", "claude"] | None,
+    Field(
+        description="What runs the implementer: opencode (default), or claude for Claude "
+        "Code on the user's own `claude` login. claude takes anthropic/<model> and no agent."
+    ),
+]
 REVIEW_CHARS = 40_000
 READ = ToolAnnotations(read_only_hint=True, open_world_hint=False)
 WRITE = ToolAnnotations(read_only_hint=False, destructive_hint=False, open_world_hint=False)
@@ -252,27 +261,33 @@ def _running(task_dir: Path) -> Manifest | None:
     return manifest if manifest.alive else None
 
 
-def _spawn(task_dir: Path, model: str | None, protect: list[str] | None) -> Manifest:
+def _spawn(
+    task_dir: Path, model: str | None, protect: list[str] | None, harness: str | None = None
+) -> Manifest:
     """Start supervising ``task_dir`` on this server's hub."""
     hub = _CONNECTION.hub
     if hub is None:
         raise ToolError("the hub is not running: the MCP connection is starting or closing")
-    start = functools.partial(hub.start_task, task_dir, model=model, protect=protect)
+    start = functools.partial(
+        hub.start_task, task_dir, model=model, protect=protect, harness=harness
+    )
     try:
         return anyio.from_thread.run(start)
-    except (HostError, RuntimeError, ValueError) as exc:
+    except (HostError, BackendError, RuntimeError, ValueError) as exc:
         raise ToolError(f"the implementer failed to start: {exc}") from exc
 
 
 @contextlib.contextmanager
-def _bridge(workdir: str | None, *, start: bool = False) -> Generator[BridgeClient, None, None]:
+def _bridge(
+    workdir: str | None, *, start: bool = False, harness: str | None = None
+) -> Generator[BridgeClient, None, None]:
     """A client for the implementer in ``workdir``, started first if ``start``."""
     task_dir = _task_dir(workdir)
     manifest = _running(task_dir)
     if manifest is None:
         if not start:
             raise ToolError(f"no implementer running in {task_dir}; submit_spec starts one")
-        manifest = _spawn(task_dir, None, None)
+        manifest = _spawn(task_dir, None, None, harness)
     client = BridgeClient(manifest)
     try:
         yield client
@@ -307,6 +322,7 @@ def start_implementer(
         list[str] | None,
         Field(description="Globs, relative to workdir, the implementer must not edit."),
     ] = None,
+    harness: Harness = None,
 ) -> dict[str, Any]:
     """Start the implementer for a project, or report the one already running.
 
@@ -318,11 +334,11 @@ def start_implementer(
     manifest = _running(task_dir)
     already = manifest is not None
     if manifest is None:
-        manifest = _spawn(task_dir, model, protect)
+        manifest = _spawn(task_dir, model, protect, harness)
     note = (
-        "Already running; its default model and protected files are unchanged. "
+        "Already running; its harness, default model and protected files are unchanged. "
         "Pass `model` per spec, or finish and start again to change them."
-        if already and (model or protect)
+        if already and (model or protect or harness)
         else ""
     )
     return {
@@ -334,16 +350,38 @@ def start_implementer(
 
 
 @server.tool(annotations=READ)
-def list_models() -> dict[str, Any]:
-    """The models and agents OpenCode can run, for submit_spec's `model` and `agent`.
+def list_models(harness: Harness = None) -> dict[str, Any]:
+    """The models and agents a harness can run, for submit_spec's `model` and `agent`.
 
     A listed model can still be refused by the provider account: a ChatGPT login,
     for one, accepts only some OpenAI models. A spec that fails that way returns
     `error` from wait; resubmit under a new Spec ID with another model.
     """
-    binary = os.environ.get("INTANDEM_OPENCODE_BIN", "opencode")
+    chosen = harness or os.environ.get("INTANDEM_HARNESS", "opencode")
+    if chosen == "claude":
+        return {
+            "harness": "claude",
+            "models": ["claude-sonnet-4-6", "claude-opus-4-6", "claude-haiku-4-5"],
+            "agents": [],
+            "hint": "The claude harness runs Anthropic models on your `claude` CLI login "
+            "(bare model names or anthropic/<model>; aliases like sonnet/opus also work). "
+            "Leave `agent` unset.",
+        }
+    host: SharedHost | None = None
+    if _CONNECTION.hub is not None:
+        try:
+            host = anyio.from_thread.run(_CONNECTION.hub.ready_opencode)
+        except (HostError, FileNotFoundError, RuntimeError) as exc:
+            raise ToolError(f"could not start OpenCode: {exc}") from exc
+    try:
+        binary = (
+            host.binary
+            if host is not None
+            else resolve_binary(os.environ.get("INTANDEM_OPENCODE_BIN", "opencode"))
+        )
+    except FileNotFoundError as exc:
+        raise ToolError(str(exc)) from exc
     models = _opencode_lines([binary, "models"])
-    host = _CONNECTION.hub.opencode if _CONNECTION.hub is not None else None
     agents: list[dict[str, str]]
     if host is not None and host.version is not None and host.version.major == 2:
         # 2.x dropped `opencode agent list`; its server lists them instead.
@@ -355,6 +393,7 @@ def list_models() -> dict[str, Any]:
             if mode.endswith(")") and name.isidentifier():
                 agents.append({"name": name, "mode": mode[:-1]})
     return {
+        "harness": "opencode",
         "models": [m for m in models if "/" in m],
         "agents": agents,
         "hint": "Primary agents (build, plan) run a spec; subagents are what the "
@@ -428,6 +467,7 @@ def spawn_implementer(
         str | None, Field(description="Commit or branch to start from. Default: HEAD.")
     ] = None,
     workdir: Workdir = None,
+    harness: Harness = None,
 ) -> dict[str, Any]:
     """Start one of several implementers, in its own git worktree and branch, on a spec.
 
@@ -441,7 +481,7 @@ def spawn_implementer(
         if fresh and _running(worktree.path) is None:
             _archive_state(worktree.path)
         dirty = bool(worktrees.git(repo, "status", "--porcelain", "--untracked-files=no").strip())
-    manifest = _running(worktree.path) or _spawn(worktree.path, None, protect)
+    manifest = _running(worktree.path) or _spawn(worktree.path, None, protect, harness)
     body: dict[str, Any] = {"spec_id": spec_id, "text": text}
     body |= {key: value for key, value in (("model", model), ("agent", agent)) if value}
     with contextlib.closing(BridgeClient(manifest)) as client:
@@ -637,12 +677,13 @@ def submit_spec(
         str, Field(description="The spec: one outcome, files it may touch, how to check.")
     ],
     model: Annotated[
-        str | None, Field(description="provider/model for this spec, e.g. openai/gpt-5.6-luna.")
+        str | None, Field(description="Model for this spec, e.g. openai/gpt-5.6-luna.")
     ] = None,
     agent: Annotated[
         str | None, Field(description="OpenCode agent to run it, e.g. build. Default: OpenCode's.")
     ] = None,
     workdir: Workdir = None,
+    harness: Harness = None,
 ) -> dict[str, Any]:
     """Hand the implementer a spec in a fresh session, starting the implementer if needed.
 
@@ -650,7 +691,7 @@ def submit_spec(
     """
     body: dict[str, Any] = {"spec_id": spec_id, "text": text}
     body |= {key: value for key, value in (("model", model), ("agent", agent)) if value}
-    with _bridge(workdir, start=True) as client:
+    with _bridge(workdir, start=True, harness=harness) as client:
         out = client.post("/spec", SpecOut, body)
         return _dump(out) | _links(client.manifest)
 

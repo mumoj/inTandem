@@ -112,6 +112,7 @@ def test_attach_hands_the_terminal_to_opencode(
         "ses_1",
     ]
     assert env["OPENCODE_SERVER_PASSWORD"] == "ocpw"
+    assert env["OPENCODE_PASSWORD"] == "ocpw"
     assert "ocpw" not in argv
 
 

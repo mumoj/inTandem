@@ -28,14 +28,14 @@ Identifier = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9][A-Za-z0-9._
 
 Text = Annotated[str, StringConstraints(max_length=60_000), AfterValidator(_not_blank)]
 
-# OpenCode request ids are a type prefix and an opaque token. Pinning that shape
-# keeps a caller-supplied id from reaching OpenCode as a path fragment. A 1.x
-# question is ``que_...``; 2.x asks through a form, ``frm_...``.
-PermissionId = Annotated[str, StringConstraints(pattern=r"^per[A-Za-z0-9_]+$")]
-QuestionId = Annotated[str, StringConstraints(pattern=r"^(que|frm)[A-Za-z0-9_]+$")]
+# Request ids come from whichever backend is running (OpenCode 1.x ``per_``/``que_``,
+# 2.x ``frm_``, Claude Code, Codex JSON-RPC). Keeping them to path-safe tokens stops
+# a caller-supplied id from reaching any backend as a path fragment.
+PermissionId = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")]
+QuestionId = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")]
 
 
-def _provider_model(value: str | None) -> str | None:
+def _model_name(value: str | None) -> str | None:
     if value is not None:
         ModelRef.parse(value)
     return value
@@ -44,8 +44,8 @@ def _provider_model(value: str | None) -> str | None:
 class SpecIn(BaseModel):
     spec_id: Identifier
     text: Text
-    model: Annotated[str | None, AfterValidator(_provider_model)] = None
-    """``provider/model`` for this spec; omitted uses the supervisor's default."""
+    model: Annotated[str | None, AfterValidator(_model_name)] = None
+    """Model for this spec (``provider/model`` for OpenCode, or a bare model name for Claude)."""
     agent: Identifier | None = None
     """An OpenCode agent name, such as ``build`` or one from the project's config."""
 

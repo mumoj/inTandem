@@ -220,11 +220,27 @@ def test_opencode_1_and_2_are_supported_and_3_is_refused_with_a_way_out() -> Non
         require_supported(Version(3, 0, 0))
 
 
-def test_model_ref_needs_a_provider() -> None:
+def test_model_ref_parses_qualified_and_bare_names() -> None:
     ref = ModelRef.parse("anthropic/claude-sonnet-4-5")
-    assert (ref.provider_id, ref.model_id) == ("anthropic", "claude-sonnet-4-5")
-    with pytest.raises(ValueError, match="provider/model"):
-        ModelRef.parse("gpt-5")
+    assert (ref.provider_id, ref.model_id, ref.qualified) == (
+        "anthropic",
+        "claude-sonnet-4-5",
+        "anthropic/claude-sonnet-4-5",
+    )
+    bare = ModelRef.parse("claude-sonnet-4-5")
+    assert (bare.provider_id, bare.model_id, bare.qualified) == (
+        None,
+        "claude-sonnet-4-5",
+        "claude-sonnet-4-5",
+    )
+    for bad in ("", "/model", "provider/", "has space"):
+        with pytest.raises(ValueError, match=r"invalid model|provider/model"):
+            ModelRef.parse(bad)
+
+
+async def test_opencode_prompt_requires_a_provider_prefix(client: OpenCodeClient) -> None:
+    with pytest.raises(OpenCodeError, match="provider/model"):
+        await client.prompt("ses_1", "hello", ModelRef.parse("gpt-5"))
 
 
 def test_a_shared_stream_keeps_only_this_directory_and_global_events() -> None:

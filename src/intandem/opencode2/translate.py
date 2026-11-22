@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from typing import Any, cast
 
 from intandem.backend.events import BackendEvent, EventType, PartUpdate
-from intandem.opencode.jsonpath import dig, dig_list, dig_str
+from intandem.backend.jsonpath import dig, dig_list, dig_str
 
 _TOOL_DETAIL_LIMIT = 240
 

@@ -193,6 +193,13 @@ class OpenCodeClient:
         """Queue a prompt and return at once. The turn runs on the server."""
         body: dict[str, Any] = {"parts": [{"type": "text", "text": text}]}
         if model is not None:
+            if model.provider_id is None:
+                raise OpenCodeError(
+                    "POST",
+                    f"/session/{session_id}/prompt_async",
+                    None,
+                    f"OpenCode requires provider/model, got {model.model_id!r}",
+                )
             body["model"] = {"providerID": model.provider_id, "modelID": model.model_id}
         if agent is not None:
             body["agent"] = agent

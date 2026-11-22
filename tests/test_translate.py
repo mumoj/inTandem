@@ -65,3 +65,23 @@ def test_a_permission_request_carries_what_an_alert_needs() -> None:
     assert translated.request_id == "per_1"
     assert (translated.permission, translated.patterns) == ("edit", ["a.md"])
     assert translated.native["properties"]["patterns"] == ["a.md"]
+
+
+def test_a_question_request_and_non_alert_native_payload() -> None:
+    asked = event(
+        "question.asked",
+        id="que_1",
+        sessionID="ses_1",
+        questions=[{"header": "DB", "question": ""}],
+    )
+    assert (asked.request_id, asked.question) == ("que_1", "DB")
+    assert asked.native["properties"]["id"] == "que_1"
+
+    delta = event("message.part.delta", sessionID="ses_1", field="text", delta="hi")
+    assert delta.native == {}
+
+
+def test_session_created_without_session_id_still_extracts_child() -> None:
+    translated = event("session.created", info={"id": "ses_2", "parentID": "ses_1"})
+    assert translated.session_id is None
+    assert (translated.child_id, translated.child_parent_id) == ("ses_2", "ses_1")

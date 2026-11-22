@@ -17,7 +17,7 @@ def tracker(clock: FakeClock) -> ActivityTracker:
     return tracker
 
 
-def text_delta() -> object:
+def text_delta() -> BackendEvent:
     return event(
         "message.part.delta",
         sessionID=SESSION,
@@ -28,7 +28,7 @@ def text_delta() -> object:
     )
 
 
-def tool_part(status: str, call: str = "call_1") -> object:
+def tool_part(status: str, call: str = "call_1") -> BackendEvent:
     part = {
         "id": "prt_2",
         "sessionID": SESSION,
@@ -50,7 +50,7 @@ def test_text_without_tools_becomes_a_reasoning_stall(
 ) -> None:
     for _ in range(7):
         clock.advance(110)
-        tracker.observe(text_delta())  # type: ignore[arg-type]
+        tracker.observe(text_delta())
     assert clock.now - tracker.last_tool > 720
     assert tracker.classify() is Activity.REASONING_STALL
 
@@ -63,13 +63,13 @@ def test_silence_becomes_hung(tracker: ActivityTracker, clock: FakeClock) -> Non
 def test_a_long_running_tool_is_work_until_it_goes_quiet(
     tracker: ActivityTracker, clock: FakeClock
 ) -> None:
-    tracker.observe(tool_part("running"))  # type: ignore[arg-type]
+    tracker.observe(tool_part("running"))
     clock.advance(600)  # a ten-minute test run
     assert tracker.classify() is Activity.WORKING
     clock.advance(200)
     assert tracker.classify() is Activity.HUNG
 
-    tracker.observe(tool_part("completed"))  # type: ignore[arg-type]
+    tracker.observe(tool_part("completed"))
     assert tracker.running_tools == {}
 
 

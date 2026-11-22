@@ -161,6 +161,13 @@ def test_an_opencode_2_server_lists_its_visible_agents(tmp_path: Path) -> None:
     ]
 
 
+def test_list_models_for_claude_does_not_touch_opencode() -> None:
+    out = mcp_server.list_models(harness="claude")
+    assert out["harness"] == "claude"
+    assert out["agents"] == []
+    assert any("claude-" in m for m in out["models"])
+
+
 # ---- parallel implementers ------------------------------------------------------
 
 
@@ -269,7 +276,9 @@ def test_spawn_creates_a_worktree_starts_it_and_submits_the_spec(
 ) -> None:
     started: list[Path] = []
 
-    def fake_spawn(task_dir: Path, model: str | None, protect: list[str] | None) -> Manifest:
+    def fake_spawn(
+        task_dir: Path, model: str | None, protect: list[str] | None, harness: str | None = None
+    ) -> Manifest:
         started.append(task_dir)
         return running(worktrees.Worktree("alpha", task_dir, "intandem/alpha"), 42001)
 
@@ -342,7 +351,9 @@ def test_leftover_state_is_archived_when_a_fresh_worktree_takes_its_place(
     stale.mkdir(parents=True)
     (stale / "state.json").write_text("{}")
 
-    def fake_spawn(task_dir: Path, model: str | None, protect: list[str] | None) -> Manifest:
+    def fake_spawn(
+        task_dir: Path, model: str | None, protect: list[str] | None, harness: str | None = None
+    ) -> Manifest:
         assert not stale.exists(), "the supervisor must start without the old state"
         raise ToolError("stop here")
 

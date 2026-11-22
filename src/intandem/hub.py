@@ -129,12 +129,11 @@ class Hub:
         return f"{self.url}/ui#token={self.token}"
 
     async def start(self) -> None:
-        """Start the shared OpenCode server in the background, then serve at once.
+        """Start serving the hub HTTP app.
 
-        OpenCode takes seconds to start; the first task waits for it, so the
-        planner's connection is not held up.
+        The shared OpenCode server starts lazily on the first OpenCode task, so
+        a Claude-only session never installs or boots OpenCode.
         """
-        self.opencode = self.new_opencode()
         sock = bind_loopback(self.port)
         self.port = sock.getsockname()[1]
         config = uvicorn.Config(self.app, log_level="warning", access_log=False, lifespan="off")
@@ -173,17 +172,20 @@ class Hub:
         paths = TaskPaths.for_task(self.state_root, task_dir)
         if task_dir in self._tasks:
             return Manifest.read(paths.manifest)
-        opencode = await self._ready_opencode()
         # Only what was asked for: an explicit None would hide INTANDEM_MODEL and
         # INTANDEM_PROTECTED, since pydantic-settings prefers arguments to the environment.
         chosen: dict[str, Any] = {"model": model, "protected": protect, **options}
         settings = Settings(
             task_dir=task_dir,
             state_root=self.state_root,
-            opencode_url=opencode.url,
-            opencode_password=SecretStr(opencode.password),
             **{key: value for key, value in chosen.items() if value is not None},
         )
+        if settings.harness == "opencode":
+            # Only OpenCode tasks start or wait for the shared server.
+            opencode = await self.ready_opencode()
+            password = SecretStr(opencode.password)
+            update = {"opencode_url": opencode.url, "opencode_password": password}
+            settings = settings.model_copy(update=update)
         ready: asyncio.Future[Manifest] = asyncio.get_running_loop().create_future()
         done = asyncio.create_task(self._run(settings, paths, ready))
         try:
@@ -192,8 +194,8 @@ class Hub:
             done.cancel()
             raise
 
-    async def _ready_opencode(self) -> SharedHost:
-        """The shared server, started again if it died; its tasks stopped with it."""
+    async def ready_opencode(self) -> SharedHost:
+        """The shared server, started lazily or restarted if it died."""
         if self.opencode is None or (self.opencode.process and not self.opencode.alive):
             self.opencode = self.new_opencode()
         await anyio.to_thread.run_sync(self.opencode.wait_ready, self.opencode.startup_timeout)
@@ -308,9 +310,9 @@ async def serve(settings: Settings, *, ready: Callable[[Manifest], None] | None 
     """
     records = settings.state_root / "hosts"
     reap_orphans(records)
-    binary = resolve_binary(settings.opencode_bin)
 
     def new_opencode() -> SharedHost:
+        binary = resolve_binary(settings.opencode_bin)
         port: dict[str, Any] = {"port": settings.opencode_port} if settings.opencode_port else {}
         host = SharedHost(binary, log_path=records / f"{os.getpid()}.log", records=records, **port)
         # Called on the event loop's thread, which lives as long as this process.

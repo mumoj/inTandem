@@ -9,6 +9,7 @@ looks. Set ``INTANDEM_NO_INSTALL=1`` to fail instead of installing.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import io
 import os
@@ -72,10 +73,14 @@ def install(version: str = INSTALL_VERSION, *, http: httpx.Client | None = None)
         raise InstallError(f"{name} failed its checksum: expected {expected}, got {actual}")
     target = install_dir() / "opencode"
     target.parent.mkdir(parents=True, exist_ok=True)
-    partial = target.with_name("opencode.partial")
-    partial.write_bytes(_extract(name, archive))
-    partial.chmod(partial.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
-    partial.replace(target)
+    partial = target.with_name(f"opencode.{os.getpid()}.partial")
+    try:
+        partial.write_bytes(_extract(name, archive))
+        partial.chmod(partial.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+        partial.replace(target)
+    finally:
+        with contextlib.suppress(FileNotFoundError):
+            partial.unlink()
     print(f"inTandem: installed OpenCode {version} to {target}", file=sys.stderr)
     return target
 

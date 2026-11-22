@@ -169,8 +169,10 @@ async def test_journal_pages_from_an_offset(http: httpx.AsyncClient) -> None:
 
 
 async def test_a_bad_model_is_refused_before_the_supervisor(http: httpx.AsyncClient) -> None:
-    response = await http.post("/spec", json={"spec_id": "S-1", "text": "x", "model": "nomodel"})
+    response = await http.post("/spec", json={"spec_id": "S-1", "text": "x", "model": "/nomodel"})
     assert response.status_code == 422
+    spaced = await http.post("/spec", json={"spec_id": "S-1", "text": "x", "model": "bad model"})
+    assert spaced.status_code == 422
 
 
 async def test_opencode_login_is_served_to_token_holders(supervisor: Supervisor) -> None:

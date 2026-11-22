@@ -769,7 +769,7 @@ class Supervisor:
     def _model_name(self, record: SpecRecord | None) -> str | None:
         if record is not None and record.model:
             return record.model
-        return f"{self.model.provider_id}/{self.model.model_id}" if self.model else None
+        return self.model.qualified if self.model else None
 
     async def _session_contains(self, session_id: str, marker: str) -> bool:
         messages = await self.api.messages(session_id)

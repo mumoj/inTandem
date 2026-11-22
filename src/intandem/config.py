@@ -11,7 +11,7 @@ import hashlib
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Self
+from typing import Literal, Self
 
 from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -32,7 +32,16 @@ class Settings(BaseSettings):
     """The working tree OpenCode edits."""
 
     model: str | None = None
-    """``provider/model`` for the implementer. ``None`` uses OpenCode's default."""
+    """``provider/model`` for the implementer. ``None`` uses the harness's default."""
+
+    harness: Literal["opencode", "claude"] = "opencode"
+    """What runs the implementer: OpenCode, or Claude Code through the Agent SDK.
+
+    ``claude`` needs the ``claude`` extra and a logged-in ``claude`` CLI, and its
+    models are ``anthropic/<model>``."""
+
+    claude_bin: str = "claude"
+    """The Claude Code CLI the claude harness runs, with the user's own login."""
 
     protected: list[str] = Field(default_factory=list)
     """Glob patterns, relative to the task, that the implementer must not edit."""
@@ -86,12 +95,16 @@ class Settings(BaseSettings):
             raise ValueError("opencode_url and opencode_password go together")
         return self
 
-    @field_validator("model")
-    @classmethod
-    def _model_has_provider(cls, value: str | None) -> str | None:
-        if value is not None and "/" not in value:
+    @model_validator(mode="after")
+    def _validate_model(self) -> Self:
+        if self.model is None:
+            return self
+        from intandem.backend.models import ModelRef
+
+        ref = ModelRef.parse(self.model)
+        if self.harness == "opencode" and ref.provider_id is None:
             raise ValueError("model must be provider/model, e.g. openrouter/qwen/qwen3-coder")
-        return value
+        return self
 
 
 @dataclass(frozen=True, slots=True)

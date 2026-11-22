@@ -7,8 +7,8 @@ inTandem never learns where OpenCode keeps a session id or a tool's status.
 from __future__ import annotations
 
 from intandem.backend.events import BackendEvent, EventType, PartUpdate
+from intandem.backend.jsonpath import dig, dig_list, dig_str
 from intandem.opencode.events import ABORTED, Event
-from intandem.opencode.jsonpath import dig, dig_list, dig_str
 
 _TYPES = {member.value: member for member in EventType if member is not EventType.OTHER}
 _RUNNING_TOOL_STATES = frozenset({"pending", "running"})
@@ -23,7 +23,6 @@ def from_opencode(event: Event) -> BackendEvent:
         type=kind,
         native_type=event.type,
         session_id=event.session_id,
-        native=event.model_dump(mode="json"),
         raw=event.raw,
     )
     match kind:
@@ -40,6 +39,7 @@ def from_opencode(event: Event) -> BackendEvent:
             out.error_name = event.error_name
             out.error_message = event.error_message
             out.aborted = event.error_name == ABORTED
+            out.native = event.model_dump(mode="json")
         case EventType.PART_UPDATED:
             out.part = _part(event.prop("part"))
         case EventType.PART_DELTA:
@@ -48,10 +48,12 @@ def from_opencode(event: Event) -> BackendEvent:
             out.request_id = event.request_id
             out.permission = dig_str(props, "permission")
             out.patterns = [str(p) for p in dig_list(props, "patterns")]
+            out.native = event.model_dump(mode="json")
         case EventType.QUESTION_ASKED:
             out.request_id = event.request_id
             first = next(iter(dig_list(props, "questions")), None)
             out.question = dig_str(first, "question") or dig_str(first, "header") or ""
+            out.native = event.model_dump(mode="json")
         case (
             EventType.PERMISSION_REPLIED | EventType.QUESTION_REPLIED | EventType.QUESTION_REJECTED
         ):

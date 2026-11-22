@@ -144,13 +144,14 @@ class SharedHost:
     def stop(self, timeout: float = 10.0) -> None:
         process = self.process
         if process is not None and process.poll() is None:
-            # Dispose first so OpenCode flushes every instance's state, then signal.
-            with contextlib.suppress(httpx.HTTPError):
-                httpx.post(
-                    f"{self.url}/global/dispose",
-                    auth=("opencode", self.password),
-                    timeout=timeout / 2,
-                )
+            # 1.x flushes per-directory instances on /global/dispose; 2.x has no such route.
+            if self.version is None or self.version.major == 1:
+                with contextlib.suppress(httpx.HTTPError):
+                    httpx.post(
+                        f"{self.url}/global/dispose",
+                        auth=("opencode", self.password),
+                        timeout=timeout / 2,
+                    )
             process.terminate()
             try:
                 process.wait(timeout)

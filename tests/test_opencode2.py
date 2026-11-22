@@ -302,6 +302,14 @@ async def test_messages_page_back_and_come_out_oldest_first(client: OpenCode2Cli
     assert messages[0].text() == "INTANDEM_SPEC_ID: S-1"
     assert messages[1].parts[0].tool == "edit"
     assert route.calls[1].request.url.params["cursor"] == "c1"
+    assert route.calls[1].request.url.params["order"] == "desc"
+
+
+async def test_opencode2_prompt_requires_a_provider_prefix(client: OpenCode2Client) -> None:
+    from intandem.opencode.client import OpenCodeError
+
+    with pytest.raises(OpenCodeError, match="provider/model"):
+        await client.prompt("ses_1", "hello", ModelRef.parse("gpt-5"))
 
 
 @respx.mock
