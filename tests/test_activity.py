@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from intandem.opencode.events import Event
+from intandem.backend.events import BackendEvent
 from intandem.supervisor.activity import Activity, ActivityTracker
 from tests.fakes import FakeClock, event
 
@@ -169,7 +169,7 @@ def test_a_stale_idle_does_not_end_a_fresh_turn(tracker: ActivityTracker, clock:
     assert not tracker.busy
 
 
-def subagent_created(child: str = "ses_child", parent: str = SESSION) -> Event:
+def subagent_created(child: str = "ses_child", parent: str = SESSION) -> BackendEvent:
     info = {"id": child, "parentID": parent, "title": "subagent"}
     return event("session.created", sessionID=child, info=info)
 

@@ -26,13 +26,13 @@ import httpx
 from fastapi import FastAPI
 from pydantic import SecretStr
 
+from intandem.backend.models import ModelRef
 from intandem.bridge.app import OpenCodeLogin, create_app
 from intandem.bridge.manifest import Manifest
 from intandem.config import Settings, TaskPaths
 from intandem.notify import Notifier
 from intandem.opencode.client import OpenCodeClient, OpenCodeError
 from intandem.opencode.events import StreamRecorder
-from intandem.opencode.models import ModelRef
 from intandem.opencode.server import Version, require_supported
 from intandem.supervisor.activity import ActivityTracker
 from intandem.supervisor.journal import Journal

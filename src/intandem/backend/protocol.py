@@ -12,8 +12,9 @@ serves them from these methods.
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
-from typing import TYPE_CHECKING, Protocol
+from typing import Protocol
 
+from intandem.backend.events import BackendEvent
 from intandem.backend.guard import Guard
 from intandem.backend.models import (
     FileDiff,
@@ -26,10 +27,6 @@ from intandem.backend.models import (
     Session,
     SessionStatus,
 )
-
-if TYPE_CHECKING:
-    # Still OpenCode's bus event until the stream gets its own neutral type.
-    from intandem.opencode.events import Event
 
 
 class ImplementerBackend(Protocol):
@@ -71,4 +68,6 @@ class ImplementerBackend(Protocol):
 
     async def diff(self, session_id: str) -> list[FileDiff]: ...
 
-    def events(self) -> AsyncIterator[Event]: ...
+    def events(self) -> AsyncIterator[BackendEvent]:
+        """One connection to the event stream. Returns when the backend closes it."""
+        ...

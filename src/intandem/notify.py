@@ -7,7 +7,7 @@ forward progress are pushed.
 Only those are escalated. A finished turn is for the planner's ``wait``, not
 for a person's attention, and a notification nobody needed is worse than none:
 it trains the reader to ignore the channel that carries the real failure. The
-same reasoning drops ``MessageAbortedError``, which the supervisor raises itself
+same reasoning drops an aborted turn's error, which the supervisor causes itself
 every time it replaces a session.
 
 Everything is still recorded in ``notifications.log``. Delivery never blocks
@@ -29,8 +29,7 @@ from typing import Any
 
 import httpx
 
-from intandem.opencode.events import ABORTED, Event
-from intandem.opencode.jsonpath import dig_list, dig_str
+from intandem.backend.events import BackendEvent, EventType
 
 log = logging.getLogger(__name__)
 
@@ -46,26 +45,25 @@ class Alert:
     payload: dict[str, Any] = field(default_factory=dict[str, Any])
 
     @classmethod
-    def from_event(cls, event: Event) -> Alert | None:
+    def from_event(cls, event: BackendEvent) -> Alert | None:
         """The alert an event deserves, or ``None`` if nobody needs to know."""
         match event.type:
-            case "permission.asked":
-                patterns = ", ".join(str(p) for p in dig_list(event.properties, "patterns"))
+            case EventType.PERMISSION_ASKED:
+                patterns = ", ".join(event.patterns)
                 summary = (
-                    f"{event.request_id} wants {event.prop('permission')} on {patterns[:120]}; "
+                    f"{event.request_id} wants {event.permission} on {patterns[:120]}; "
                     "answer with `inTandem allow` or `inTandem deny`"
                 )
-            case "question.asked":
-                first = next(iter(dig_list(event.properties, "questions")), None)
-                asked = dig_str(first, "question") or dig_str(first, "header") or ""
-                summary = f"{event.request_id} asks: {asked[:160]}; answer with `inTandem answer`"
-            case "session.error":
-                if event.error_name == ABORTED:
+            case EventType.QUESTION_ASKED:
+                asked = event.question[:160]
+                summary = f"{event.request_id} asks: {asked}; answer with `inTandem answer`"
+            case EventType.ERROR:
+                if event.aborted:
                     return None
                 summary = f"{event.error_name or 'error'}: {event.error_message[:300]}"
             case _:
                 return None
-        return cls(event.type, summary, event.session_id, event.model_dump(mode="json"))
+        return cls(event.type.value, summary, event.session_id, event.native)
 
 
 def _event_json(alert: Alert) -> str:

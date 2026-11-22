@@ -18,6 +18,7 @@ from pydantic import BaseModel, TypeAdapter
 
 from intandem.backend import errors as backend_errors
 from intandem.backend import models as neutral
+from intandem.backend.events import BackendEvent
 from intandem.backend.guard import Guard
 from intandem.backend.protocol import ImplementerBackend
 from intandem.opencode import models as wire
@@ -31,6 +32,7 @@ from intandem.opencode.models import (
     SessionStatus,
 )
 from intandem.opencode.rules import guard_to_rules, subagent_rules
+from intandem.opencode.translate import from_opencode
 
 
 class OpenCodeError(backend_errors.BackendError):
@@ -248,7 +250,7 @@ class OpenCodeClient:
     async def dispose(self) -> None:
         await self._request("POST", "/instance/dispose")
 
-    async def events(self) -> AsyncIterator[Event]:
+    async def events(self) -> AsyncIterator[BackendEvent]:
         """One connection to the event stream. Returns when the server closes it.
 
         Reconnecting is the caller's decision: the supervisor needs to resync
@@ -262,7 +264,7 @@ class OpenCodeClient:
                 source.response.raise_for_status()
                 async for message in source.aiter_sse():
                     if message.data and (event := self._parse(message.data)) is not None:
-                        yield event
+                        yield from_opencode(event)
         except httpx.HTTPStatusError as exc:
             status = exc.response.status_code
             raise OpenCodeError("GET", path, status, "event stream refused") from exc

@@ -13,6 +13,7 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Any
 
+from intandem.backend.events import BackendEvent
 from intandem.backend.guard import Guard
 from intandem.backend.models import (
     FileDiff,
@@ -32,6 +33,7 @@ from intandem.opencode.client import NotFoundError, OpenCodeError
 from intandem.opencode.events import Event
 from intandem.opencode.models import PermissionRule
 from intandem.opencode.rules import guard_to_rules, subagent_rules
+from intandem.opencode.translate import from_opencode
 
 
 @dataclass
@@ -67,7 +69,7 @@ class FakeOpenCode:
         self.statuses: dict[str, SessionStatus] = {}
         self.fail_prompts = False
         self.prompt_targets: list[tuple[ModelRef | None, str | None]] = []
-        self.event_queue: asyncio.Queue[Event | None] = asyncio.Queue()
+        self.event_queue: asyncio.Queue[BackendEvent | None] = asyncio.Queue()
         self._ids = itertools.count(1)
 
     # -- helpers for tests --------------------------------------------------
@@ -178,7 +180,7 @@ class FakeOpenCode:
         self._session(session_id)
         return [FileDiff(file="hello.txt", additions=1, deletions=0, status="added")]
 
-    async def events(self) -> AsyncIterator[Event]:
+    async def events(self) -> AsyncIterator[BackendEvent]:
         while (event := await self.event_queue.get()) is not None:
             yield event
 
@@ -198,6 +200,7 @@ class FakeOpenCode:
         raise NotFoundError("POST", request_id, 404, "no such request")
 
 
-def event(kind: str, **properties: Any) -> Event:
+def event(kind: str, **properties: Any) -> BackendEvent:
+    """An OpenCode bus event, as the OpenCode adapter hands it to the supervisor."""
     parsed = Event.model_validate({"id": "evt_1", "type": kind, "properties": properties})
-    return parsed
+    return from_opencode(parsed)

@@ -28,8 +28,7 @@ from enum import StrEnum
 
 from pydantic import BaseModel, Field
 
-from intandem.opencode.events import ABORTED, Event
-from intandem.opencode.jsonpath import dig, dig_str
+from intandem.backend.events import ASKED, SETTLED, BackendEvent, EventType, PartUpdate
 
 
 class Activity(StrEnum):
@@ -41,8 +40,6 @@ class Activity(StrEnum):
     ERROR = "error"
 
 
-_RUNNING_TOOL_STATES = frozenset({"pending", "running"})
-_TOOL_DETAIL_LIMIT = 240
 _TOOL_DETAIL_COUNT = 5
 
 
@@ -147,75 +144,53 @@ class ActivityTracker:
             return True
         return False
 
-    def observe(self, event: Event) -> None:
-        if event.type == "session.created":
-            child = dig_str(event.properties, "info", "id")
-            if child:
-                self.adopt(child, dig_str(event.properties, "info", "parentID"))
+    def observe(self, event: BackendEvent) -> None:
+        if event.type is EventType.SESSION_CREATED and event.child_id:
+            self.adopt(event.child_id, event.child_parent_id)
         if self.session_id is None or event.session_id not in self.family:
             return
         now = self.clock()
-        if event.session_id != self.session_id:
-            self._observe_child(event, now)
-            return
+        if event.session_id == self.session_id:
+            self._observe_turn(event)
+        if event.type is EventType.PART_UPDATED and event.part is not None:
+            self._observe_part(event.part, now)
+        elif event.type is EventType.PART_DELTA and event.delta_field == "text":
+            self.last_text = now
+        elif event.type in ASKED and event.request_id:
+            self.pending.add(event.request_id)
+        elif event.type in SETTLED and event.request_id:
+            self.pending.discard(event.request_id)
+
+    def _observe_turn(self, event: BackendEvent) -> None:
+        """Turn boundaries count only on the tracked session, never a subagent's."""
         match event.type:
-            case "session.status":
-                kind = event.prop("status", "type")
-                if kind in ("busy", "retry"):
+            case EventType.STATUS:
+                if event.status in ("busy", "retry"):
                     if not self.busy:
                         self.turn_started()
-                    self.retry = _retry_detail(event) if kind == "retry" else None
-                elif kind == "idle":
+                    self.retry = event.retry_detail if event.status == "retry" else None
+                elif event.status == "idle":
                     self.turn_ended()
-            case "session.idle":
+            case EventType.IDLE:
                 self.turn_ended()
-            case "message.part.updated":
-                self._observe_part(event.prop("part"), now)
-            case "message.part.delta":
-                if event.prop("field") == "text":
-                    self.last_text = now
-            case "permission.asked" | "question.asked":
-                if event.request_id:
-                    self.pending.add(event.request_id)
-            case "permission.replied" | "question.replied" | "question.rejected":
-                if event.request_id:
-                    self.pending.discard(event.request_id)
-            case "session.error":
-                if event.error_name != ABORTED:
+            case EventType.ERROR:
+                if not event.aborted:
                     name = event.error_name or "error"
                     self.error = f"{name}: {event.error_message}"[:300]
                 self.turn_ended()
             case _:
                 pass
 
-    def _observe_child(self, event: Event, now: float) -> None:
-        match event.type:
-            case "message.part.updated":
-                self._observe_part(event.prop("part"), now)
-            case "message.part.delta":
-                if event.prop("field") == "text":
-                    self.last_text = now
-            case "permission.asked" | "question.asked":
-                if event.request_id:
-                    self.pending.add(event.request_id)
-            case "permission.replied" | "question.replied" | "question.rejected":
-                if event.request_id:
-                    self.pending.discard(event.request_id)
-            case _:
-                pass
-
-    def _observe_part(self, part: object, now: float) -> None:
-        kind = dig_str(part, "type")
-        if kind == "tool":
+    def _observe_part(self, part: PartUpdate, now: float) -> None:
+        if part.kind == "tool":
             self.last_tool = now
-            call = dig_str(part, "callID") or dig_str(part, "id") or ""
-            if dig(part, "state", "status") in _RUNNING_TOOL_STATES:
-                self.running_tools[call] = dig_str(part, "tool") or "tool"
-                self.running_tool_details[call] = _tool_detail(part)
+            if part.running:
+                self.running_tools[part.call_id] = part.tool
+                self.running_tool_details[part.call_id] = part.detail
             else:
-                self.running_tools.pop(call, None)
-                self.running_tool_details.pop(call, None)
-        elif kind in ("text", "reasoning"):
+                self.running_tools.pop(part.call_id, None)
+                self.running_tool_details.pop(part.call_id, None)
+        elif part.kind in ("text", "reasoning"):
             self.last_text = now
 
     def turn_ended(self) -> None:
@@ -259,23 +234,3 @@ class ActivityTracker:
             error=self.error,
             retry=self.retry,
         )
-
-
-def _retry_detail(event: Event) -> str:
-    message = dig_str(event.properties, "status", "message") or ""
-    return f"attempt {event.prop('status', 'attempt')}: {message[:200]}"
-
-
-def _tool_detail(part: object) -> str:
-    """Return a bounded summary of a running tool call for stall diagnosis."""
-    tool = dig_str(part, "tool") or "tool"
-    status = dig_str(part, "state", "status") or "unknown"
-    command = dig_str(part, "state", "input", "command")
-    title = dig_str(part, "state", "title")
-    summary = command or title
-    if not summary:
-        return f"{tool} ({status})"
-    summary = " ".join(summary.split())
-    if len(summary) > _TOOL_DETAIL_LIMIT:
-        summary = summary[: _TOOL_DETAIL_LIMIT - 1] + "…"
-    return f"{tool} ({status}): {summary}"

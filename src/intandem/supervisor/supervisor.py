@@ -33,6 +33,7 @@ from pathlib import Path
 from pydantic import BaseModel
 
 from intandem.backend.errors import BackendError, NotFoundError
+from intandem.backend.events import TURN_OVER, BackendEvent, EventType
 from intandem.backend.models import (
     FileDiff,
     Message,
@@ -46,8 +47,6 @@ from intandem.backend.models import (
 from intandem.backend.protocol import ImplementerBackend
 from intandem.config import TaskPaths
 from intandem.notify import Alert, Notifier
-from intandem.opencode.events import Event
-from intandem.opencode.jsonpath import dig
 from intandem.supervisor.activity import Activity, ActivityReport, ActivityTracker
 from intandem.supervisor.journal import Journal
 from intandem.supervisor.prompts import (
@@ -131,9 +130,6 @@ class StatusReport(BaseModel):
     activity: ActivityReport
     active_directives: list[str]
     result: ImplementerResult | None
-
-
-_TURN_OVER = frozenset({"session.idle", "session.error"})
 
 
 def digest(text: str) -> str:
@@ -612,15 +608,15 @@ class Supervisor:
 
     # ---- event stream ------------------------------------------------------
 
-    async def handle_event(self, event: Event) -> None:
+    async def handle_event(self, event: BackendEvent) -> None:
         """Fold one stream event into the supervisor's view."""
-        if event.type == "server.connected":
+        if event.type is EventType.CONNECTED:
             # A (re)connect means replies may have been missed while away.
             self._resync_needed = True
         known = set(self.tracker.children)
         self.tracker.observe(event)
         for child in self.tracker.children - known:
-            await self._guard_subagent(child, dig(event.properties, "info", "permission"))
+            await self._guard_subagent(child, event.child_policy)
         record = self.state.current
         mine = record is not None and event.session_id == record.session_id
         # A subagent waiting on a human is the spec waiting on a human.
@@ -630,20 +626,20 @@ class Supervisor:
             if alert is not None:
                 self.journal.append(
                     "stream_event",
-                    stream_type=event.type,
+                    stream_type=event.type.value,
                     summary=alert.summary,
                     spec_id=record.spec_id,
                     session_id=record.session_id,
                 )
                 self.notifier.escalate(alert)
-            elif event.type in _TURN_OVER:
+            elif event.type in TURN_OVER:
                 self.journal.append(
                     "stream_event",
-                    stream_type=event.type,
+                    stream_type=event.type.value,
                     spec_id=record.spec_id,
                     error=event.error_name,
                 )
-        if (mine and event.type in _TURN_OVER) or event.type == "file.edited":
+        if (mine and event.type in TURN_OVER) or event.type is EventType.FILE_EDITED:
             # Check now rather than on the next tick. A turn that wrote its
             # result, or tampered with a protected file, just before ending
             # would otherwise be reported as merely ended.
