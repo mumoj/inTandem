@@ -11,6 +11,7 @@ from typing import Any
 import pytest
 
 from intandem import runtime
+from intandem.backend.guard import Guard
 from intandem.config import TaskPaths
 from intandem.opencode.models import PermissionAction
 from intandem.supervisor.prompts import directive_marker, spec_marker
@@ -178,7 +179,7 @@ def seed_state(paths: TaskPaths, task_dir: Path, record: SpecRecord) -> None:
 async def test_restart_does_not_resend_a_prompt_that_arrived(
     make_supervisor: SupervisorFactory, api: FakeOpenCode, paths: TaskPaths, task_dir: Path
 ) -> None:
-    session = await api.create_session("t", [])
+    session = await api.create_session("t", Guard())
     await api.prompt(session.id, f"{spec_marker('S-1')}\n\nAdd a greeting.", None)
     seed_state(
         paths,
@@ -202,7 +203,7 @@ async def test_restart_does_not_resend_a_prompt_that_arrived(
 async def test_restart_sends_a_prompt_that_never_arrived(
     make_supervisor: SupervisorFactory, api: FakeOpenCode, paths: TaskPaths, task_dir: Path
 ) -> None:
-    session = await api.create_session("t", [])
+    session = await api.create_session("t", Guard())
     seed_state(
         paths,
         task_dir,

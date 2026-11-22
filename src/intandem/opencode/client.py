@@ -1,8 +1,8 @@
 """A typed async client for the OpenCode 1.x server API.
 
-``OpenCodeAPI`` is the seam: the supervisor depends on that protocol, never on
-HTTP, so tests swap in an in-memory fake and a future OpenCode 2 adapter is one
-new class rather than a rewrite.
+``OpenCodeClient`` is one adapter behind ``ImplementerBackend``: it speaks
+OpenCode's HTTP API and wire shapes, and hands the supervisor inTandem's
+neutral models.
 """
 
 from __future__ import annotations
@@ -10,28 +10,30 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator, Iterable, Mapping
 from types import TracebackType
-from typing import Any, Protocol, Self
+from typing import Any, Self
 
 import httpx
 from httpx_sse import aconnect_sse
-from pydantic import TypeAdapter
+from pydantic import BaseModel, TypeAdapter
 
+from intandem.backend import errors as backend_errors
+from intandem.backend import models as neutral
+from intandem.backend.guard import Guard
+from intandem.backend.protocol import ImplementerBackend
+from intandem.opencode import models as wire
 from intandem.opencode.events import Event
 from intandem.opencode.models import (
     FileDiff,
     Health,
-    Message,
     ModelRef,
     PermissionReply,
-    PermissionRequest,
     PermissionRule,
-    QuestionRequest,
-    Session,
     SessionStatus,
 )
+from intandem.opencode.rules import guard_to_rules, subagent_rules
 
 
-class OpenCodeError(RuntimeError):
+class OpenCodeError(backend_errors.BackendError):
     """OpenCode answered with an error, or could not be reached at all."""
 
     def __init__(self, method: str, path: str, status_code: int | None, detail: str = "") -> None:
@@ -45,54 +47,23 @@ class OpenCodeError(RuntimeError):
         )
 
 
-class NotFoundError(OpenCodeError):
+class NotFoundError(OpenCodeError, backend_errors.NotFoundError):
     """The session, permission or question no longer exists."""
 
 
-class OpenCodeAPI(Protocol):
-    """Everything the supervisor needs from an OpenCode server."""
+OpenCodeAPI = ImplementerBackend
+"""The old name of the seam, kept for one release."""
 
-    async def health(self) -> Health: ...
 
-    async def create_session(self, title: str, permission: list[PermissionRule]) -> Session: ...
-
-    async def get_session(self, session_id: str) -> Session: ...
-
-    async def set_session_permission(
-        self, session_id: str, permission: list[PermissionRule]
-    ) -> None: ...
-
-    async def session_status(self) -> dict[str, SessionStatus]: ...
-
-    async def messages(self, session_id: str, limit: int | None = None) -> list[Message]: ...
-
-    async def prompt(
-        self, session_id: str, text: str, model: ModelRef | None, agent: str | None = None
-    ) -> None: ...
-
-    async def abort(self, session_id: str) -> bool: ...
-
-    async def permissions(self) -> list[PermissionRequest]: ...
-
-    async def reply_permission(
-        self, request_id: str, reply: PermissionReply, message: str | None = None
-    ) -> bool: ...
-
-    async def questions(self) -> list[QuestionRequest]: ...
-
-    async def reply_question(self, request_id: str, answers: list[list[str]]) -> bool: ...
-
-    async def reject_question(self, request_id: str) -> bool: ...
-
-    async def diff(self, session_id: str) -> list[FileDiff]: ...
-
-    def events(self) -> AsyncIterator[Event]: ...
+def _neutral[T: BaseModel](kind: type[T], source: BaseModel) -> T:
+    """``source`` re-read as the neutral ``kind``: field names line up, extras ride along."""
+    return kind.model_validate(source.model_dump())
 
 
 _STATUSES = TypeAdapter(dict[str, SessionStatus])
-_MESSAGES = TypeAdapter(list[Message])
-_PERMISSIONS = TypeAdapter(list[PermissionRequest])
-_QUESTIONS = TypeAdapter(list[QuestionRequest])
+_MESSAGES = TypeAdapter(list[wire.Message])
+_PERMISSIONS = TypeAdapter(list[wire.PermissionRequest])
+_QUESTIONS = TypeAdapter(list[wire.QuestionRequest])
 _DIFFS = TypeAdapter(list[FileDiff])
 
 
@@ -182,32 +153,37 @@ class OpenCodeClient:
         response = await self._request("GET", "/global/health")
         return Health.model_validate_json(response.content)
 
-    async def create_session(self, title: str, permission: list[PermissionRule]) -> Session:
-        body = {
-            "title": title,
-            "permission": [rule.model_dump(mode="json") for rule in permission],
-        }
+    async def create_session(self, title: str, guard: Guard) -> neutral.Session:
+        body = {"title": title, "permission": _dump_rules(guard_to_rules(guard))}
         response = await self._request("POST", "/session", json=body)
-        return Session.model_validate_json(response.content)
+        return _neutral(neutral.Session, wire.Session.model_validate_json(response.content))
 
-    async def get_session(self, session_id: str) -> Session:
+    async def get_session(self, session_id: str) -> neutral.Session:
         response = await self._request("GET", f"/session/{session_id}")
-        return Session.model_validate_json(response.content)
+        return _neutral(neutral.Session, wire.Session.model_validate_json(response.content))
+
+    async def guard_subagent(self, session_id: str, guard: Guard, inherited: object = None) -> None:
+        if inherited is None:
+            session = await self.get_session(session_id)
+            inherited = (session.model_extra or {}).get("permission")
+        await self.set_session_permission(session_id, subagent_rules(inherited, guard))
 
     async def set_session_permission(
         self, session_id: str, permission: list[PermissionRule]
     ) -> None:
-        body = {"permission": [rule.model_dump(mode="json") for rule in permission]}
-        await self._request("PATCH", f"/session/{session_id}", json=body)
+        """Replace a session's whole ruleset. OpenCode-only; the seam uses guards."""
+        await self._request(
+            "PATCH", f"/session/{session_id}", json={"permission": _dump_rules(permission)}
+        )
 
     async def session_status(self) -> dict[str, SessionStatus]:
         response = await self._request("GET", "/session/status")
         return _STATUSES.validate_json(response.content)
 
-    async def messages(self, session_id: str, limit: int | None = None) -> list[Message]:
+    async def messages(self, session_id: str, limit: int | None = None) -> list[neutral.Message]:
         params = {"limit": limit} if limit else None
         response = await self._request("GET", f"/session/{session_id}/message", params=params)
-        return _MESSAGES.validate_json(response.content)
+        return [_neutral(neutral.Message, m) for m in _MESSAGES.validate_json(response.content)]
 
     async def prompt(
         self, session_id: str, text: str, model: ModelRef | None, agent: str | None = None
@@ -215,7 +191,7 @@ class OpenCodeClient:
         """Queue a prompt and return at once. The turn runs on the server."""
         body: dict[str, Any] = {"parts": [{"type": "text", "text": text}]}
         if model is not None:
-            body["model"] = model.model_dump(by_alias=True)
+            body["model"] = {"providerID": model.provider_id, "modelID": model.model_id}
         if agent is not None:
             body["agent"] = agent
         await self._request("POST", f"/session/{session_id}/prompt_async", json=body)
@@ -224,9 +200,10 @@ class OpenCodeClient:
         response = await self._request("POST", f"/session/{session_id}/abort")
         return _BOOL.validate_json(response.content)
 
-    async def permissions(self) -> list[PermissionRequest]:
+    async def permissions(self) -> list[neutral.PermissionRequest]:
         response = await self._request("GET", "/permission")
-        return _PERMISSIONS.validate_json(response.content)
+        requests = _PERMISSIONS.validate_json(response.content)
+        return [_neutral(neutral.PermissionRequest, r) for r in requests]
 
     async def reply_permission(
         self, request_id: str, reply: PermissionReply, message: str | None = None
@@ -237,9 +214,10 @@ class OpenCodeClient:
         response = await self._request("POST", f"/permission/{request_id}/reply", json=body)
         return _BOOL.validate_json(response.content)
 
-    async def questions(self) -> list[QuestionRequest]:
+    async def questions(self) -> list[neutral.QuestionRequest]:
         response = await self._request("GET", "/question")
-        return _QUESTIONS.validate_json(response.content)
+        requests = _QUESTIONS.validate_json(response.content)
+        return [_neutral(neutral.QuestionRequest, r) for r in requests]
 
     async def reply_question(self, request_id: str, answers: list[list[str]]) -> bool:
         response = await self._request(
@@ -295,3 +273,7 @@ class OpenCodeClient:
         if self.directory:
             return Event.parse_global(data, self.directory)
         return Event.parse(data)
+
+
+def _dump_rules(rules: list[PermissionRule]) -> list[dict[str, Any]]:
+    return [rule.model_dump(mode="json") for rule in rules]

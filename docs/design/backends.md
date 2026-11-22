@@ -63,6 +63,15 @@ Decisions:
    the OpenCode adapter.
 5. **`agent` stays an optional string** passed through to the backend. A
    backend with no agents rejects a non-null value with a clear error.
+6. **Subagents get `guard_subagent(session_id, guard, inherited=None)`**
+   instead of a general `set_guard`. Guarding a subagent is the only time the
+   supervisor changes a live session's policy, and it has to keep the agent's
+   own rules. `inherited` carries them opaquely when an event reported them.
+   With `None`, the backend looks them up itself.
+7. **Neutral models use snake_case field names.** The bridge's `/pending`
+   JSON now says `session_id`, not OpenCode's `sessionID`. The CLI, MCP server
+   and dashboard all read it through the same models. Evidence files keep
+   OpenCode's extra fields as they came.
 
 ## Specs
 

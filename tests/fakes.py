@@ -1,6 +1,6 @@
 """In-memory stand-ins for OpenCode and the clock.
 
-``FakeOpenCode`` implements the ``OpenCodeAPI`` protocol, which is the whole
+``FakeOpenCode`` implements the ``ImplementerBackend`` protocol, which is the whole
 point of that seam: the supervisor's logic is tested without a process, a port,
 or a model. The end-to-end test covers the real thing.
 """
@@ -13,9 +13,8 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Any
 
-from intandem.opencode.client import NotFoundError, OpenCodeError
-from intandem.opencode.events import Event
-from intandem.opencode.models import (
+from intandem.backend.guard import Guard
+from intandem.backend.models import (
     FileDiff,
     Health,
     Message,
@@ -24,12 +23,15 @@ from intandem.opencode.models import (
     Part,
     PermissionReply,
     PermissionRequest,
-    PermissionRule,
     QuestionRequest,
     Session,
     SessionStatus,
     TokenUsage,
 )
+from intandem.opencode.client import NotFoundError, OpenCodeError
+from intandem.opencode.events import Event
+from intandem.opencode.models import PermissionRule
+from intandem.opencode.rules import guard_to_rules, subagent_rules
 
 
 @dataclass
@@ -85,7 +87,7 @@ class FakeOpenCode:
             PermissionRequest.model_validate(
                 {
                     "id": request_id,
-                    "sessionID": session_id,
+                    "session_id": session_id,
                     "permission": "edit",
                     "patterns": [pattern],
                     "metadata": {},
@@ -99,9 +101,9 @@ class FakeOpenCode:
     async def health(self) -> Health:
         return Health(healthy=True, version="1.19.3")
 
-    async def create_session(self, title: str, permission: list[PermissionRule]) -> Session:
+    async def create_session(self, title: str, guard: Guard) -> Session:
         session_id = f"ses_{next(self._ids)}"
-        self.sessions[session_id] = FakeSession(session_id, title, permission)
+        self.sessions[session_id] = FakeSession(session_id, title, guard_to_rules(guard))
         return Session(id=session_id, title=title)
 
     async def get_session(self, session_id: str) -> Session:
@@ -112,14 +114,15 @@ class FakeOpenCode:
                 "title": session.title,
                 "cost": session.cost,
                 "tokens": session.tokens,
-                "parentID": session.parent_id,
+                "parent_id": session.parent_id,
             }
         )
 
-    async def set_session_permission(
-        self, session_id: str, permission: list[PermissionRule]
-    ) -> None:
-        self._session(session_id).rules = list(permission)
+    async def guard_subagent(self, session_id: str, guard: Guard, inherited: object = None) -> None:
+        session = self._session(session_id)
+        if inherited is None:
+            inherited = [rule.model_dump(mode="json") for rule in session.rules]
+        session.rules = subagent_rules(inherited, guard)
 
     async def session_status(self) -> dict[str, SessionStatus]:
         return dict(self.statuses)

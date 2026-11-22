@@ -3,8 +3,8 @@
 "Do not edit instruction.md" started life as a sentence in a prompt, and a
 sentence is a request. Here it becomes two mechanisms:
 
-* a permission rule, so an attempted edit stops and waits for a human with the
-  diff attached instead of simply happening; and
+* a guard the backend enforces, so an attempted edit stops and waits for a
+  human with the diff attached instead of simply happening; and
 * a content hash, checked while the spec runs, which catches the edits that
   arrive some other way (a shell redirect, a script the model wrote).
 """
@@ -15,17 +15,9 @@ import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 
-from intandem.opencode.models import PermissionAction, PermissionRule
+from intandem.backend.guard import Guard
 
 MISSING = "<missing>"
-
-# What an unattended run needs to avoid stalling on OpenCode's cautious
-# defaults. Broad rules come first: OpenCode lets the last matching rule win.
-UNATTENDED_RULES: tuple[PermissionRule, ...] = (
-    PermissionRule(permission="edit", pattern="*", action=PermissionAction.ALLOW),
-    PermissionRule(permission="external_directory", pattern="*", action=PermissionAction.ALLOW),
-    PermissionRule(permission="doom_loop", pattern="*", action=PermissionAction.ALLOW),
-)
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,13 +25,9 @@ class ProtectedFiles:
     root: Path
     patterns: tuple[str, ...] = ()
 
-    def rules(self) -> list[PermissionRule]:
-        """The session ruleset: unattended defaults, then one ask per pattern."""
-        asks = [
-            PermissionRule(permission="edit", pattern=pattern, action=PermissionAction.ASK)
-            for pattern in self.patterns
-        ]
-        return [*UNATTENDED_RULES, *asks]
+    def guard(self) -> Guard:
+        """These patterns as the backend-neutral guard the session runs under."""
+        return Guard(protected=self.patterns)
 
     def snapshot(self) -> dict[str, str]:
         """A hash per matching file, plus a marker for patterns that match nothing.

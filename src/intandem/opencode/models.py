@@ -1,38 +1,57 @@
-"""The slice of OpenCode's server API this package reads.
+"""The slice of OpenCode's server API this package reads, in OpenCode's own shape.
 
 Shapes come from the OpenAPI document ``opencode serve`` publishes at ``/doc``
 (checked against 1.19.3). Every model allows extra fields: OpenCode adds
 properties between minor versions, and a new field should never be what stops
 a supervisor mid-task. Only the fields something here acts on are declared.
+
+Models whose shape matches inTandem's neutral ones are those very classes. The
+rest carry OpenCode's field names; the client converts them at its edge.
 """
 
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import Any, Literal, Self
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
+
+from intandem.backend.models import (
+    CacheUsage,
+    FileDiff,
+    Health,
+    ModelRef,
+    Part,
+    PermissionReply,
+    QuestionInfo,
+    QuestionOption,
+    SessionStatus,
+    TokenUsage,
+)
+
+__all__ = [
+    "CacheUsage",
+    "FileDiff",
+    "Health",
+    "Message",
+    "MessageInfo",
+    "ModelRef",
+    "Part",
+    "PermissionAction",
+    "PermissionReply",
+    "PermissionRequest",
+    "PermissionRule",
+    "QuestionInfo",
+    "QuestionOption",
+    "QuestionRequest",
+    "Session",
+    "SessionStatus",
+    "TokenUsage",
+]
 
 
 class _Model(BaseModel):
     model_config = ConfigDict(extra="allow", populate_by_name=True)
-
-
-class Health(_Model):
-    healthy: bool
-    version: str
-
-
-class CacheUsage(_Model):
-    read: float = 0
-    write: float = 0
-
-
-class TokenUsage(_Model):
-    input: float = 0
-    output: float = 0
-    reasoning: float = 0
-    cache: CacheUsage = Field(default_factory=CacheUsage)
 
 
 class Session(_Model):
@@ -42,14 +61,6 @@ class Session(_Model):
     title: str = ""
     cost: float = 0
     tokens: TokenUsage | None = None
-
-
-class SessionStatus(_Model):
-    """``idle``, ``busy`` or ``retry``. Kept open in case a later version adds one."""
-
-    type: str
-    attempt: int | None = None
-    message: str | None = None
 
 
 class PermissionAction(StrEnum):
@@ -71,9 +82,6 @@ class PermissionRule(_Model):
     action: PermissionAction
 
 
-PermissionReply = Literal["once", "always", "reject"]
-
-
 class PermissionRequest(_Model):
     id: str
     session_id: str = Field(alias="sessionID")
@@ -82,29 +90,10 @@ class PermissionRequest(_Model):
     metadata: dict[str, Any] = Field(default_factory=dict[str, Any])
 
 
-class QuestionOption(_Model):
-    label: str
-    description: str = ""
-
-
-class QuestionInfo(_Model):
-    question: str
-    header: str = ""
-    options: list[QuestionOption] = Field(default_factory=list[QuestionOption])
-    multiple: bool = False
-
-
 class QuestionRequest(_Model):
     id: str
     session_id: str = Field(alias="sessionID")
     questions: list[QuestionInfo] = Field(default_factory=list[QuestionInfo])
-
-
-class FileDiff(_Model):
-    file: str | None = None
-    additions: float = 0
-    deletions: float = 0
-    status: str | None = None
 
 
 class MessageInfo(_Model):
@@ -116,30 +105,6 @@ class MessageInfo(_Model):
     provider_id: str | None = Field(default=None, alias="providerID")
 
 
-class Part(_Model):
-    type: str
-    text: str | None = None
-    tool: str | None = None
-
-
 class Message(_Model):
     info: MessageInfo
     parts: list[Part] = Field(default_factory=list[Part])
-
-    def text(self) -> str:
-        """The message's visible text, joined across its text parts."""
-        return "\n".join(part.text for part in self.parts if part.type == "text" and part.text)
-
-
-class ModelRef(_Model):
-    """``provider/model`` split the way the prompt endpoint wants it."""
-
-    provider_id: str = Field(alias="providerID")
-    model_id: str = Field(alias="modelID")
-
-    @classmethod
-    def parse(cls, value: str) -> Self:
-        provider, _, model = value.partition("/")
-        if not provider or not model:
-            raise ValueError(f"expected provider/model, got {value!r}")
-        return cls(providerID=provider, modelID=model)

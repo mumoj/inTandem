@@ -11,7 +11,7 @@ from typing import Annotated, Any, Self
 
 from pydantic import AfterValidator, BaseModel, Field, StringConstraints, model_validator
 
-from intandem.opencode.models import FileDiff, Message, ModelRef, PermissionReply
+from intandem.backend.models import FileDiff, Message, ModelRef, PermissionReply
 from intandem.supervisor.results import ImplementerResult
 from intandem.supervisor.state import DirectiveAction, SpecStatus
 from intandem.supervisor.supervisor import Pending, StatusReport, WaitReason

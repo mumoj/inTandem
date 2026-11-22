@@ -28,6 +28,7 @@ from starlette.datastructures import Headers
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from intandem import __version__
+from intandem.backend.errors import BackendError, NotFoundError
 from intandem.bridge.schemas import (
     AnswerIn,
     DiffOut,
@@ -47,7 +48,6 @@ from intandem.bridge.schemas import (
     SpecOut,
     WaitOut,
 )
-from intandem.opencode.client import NotFoundError, OpenCodeError
 from intandem.supervisor.state import SpecRecord
 from intandem.supervisor.supervisor import (
     CostReport,
@@ -310,8 +310,8 @@ def create_app(
     app.add_middleware(BodyLimit)
     app.add_exception_handler(SupervisorError, _error(status.HTTP_409_CONFLICT))
     # Starlette walks the exception's MRO, so NotFoundError gets its own status even
-    # though it is also an OpenCodeError.
-    app.add_exception_handler(OpenCodeError, _error(status.HTTP_502_BAD_GATEWAY))
+    # though it is also a BackendError.
+    app.add_exception_handler(BackendError, _error(status.HTTP_502_BAD_GATEWAY))
     app.add_exception_handler(NotFoundError, _error(status.HTTP_404_NOT_FOUND))
     app.include_router(router)
     app.add_api_route("/ui", _dashboard, methods=["GET"], include_in_schema=False)

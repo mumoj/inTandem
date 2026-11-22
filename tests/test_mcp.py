@@ -89,7 +89,7 @@ def test_wait_says_what_to_do_next(project: Path) -> None:
 @respx.mock
 def test_reply_permission_picks_the_only_request(project: Path) -> None:
     pending = {
-        "permissions": [{"id": "per_1", "sessionID": "ses_1", "permission": "edit"}],
+        "permissions": [{"id": "per_1", "session_id": "ses_1", "permission": "edit"}],
         "questions": [],
     }
     respx.get(f"{URL}/pending").respond(json=pending)

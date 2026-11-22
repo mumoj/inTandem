@@ -9,6 +9,8 @@ import httpx
 import pytest
 import respx
 
+from intandem.backend import errors as backend_errors
+from intandem.backend.guard import Guard
 from intandem.opencode.client import NotFoundError, OpenCodeClient, OpenCodeError
 from intandem.opencode.events import Event
 from intandem.opencode.models import ModelRef, PermissionAction, PermissionRule
@@ -32,20 +34,75 @@ async def test_requests_carry_basic_auth(client: OpenCodeClient) -> None:
 
 
 @respx.mock
-async def test_create_session_sends_the_ruleset_in_order(client: OpenCodeClient) -> None:
+async def test_create_session_sends_the_guard_as_an_ordered_ruleset(
+    client: OpenCodeClient,
+) -> None:
     route = respx.post(f"{BASE}/session").respond(json={"id": "ses_1", "title": "t"})
-    rules = [
-        PermissionRule(permission="edit", pattern="*", action=PermissionAction.ALLOW),
-        PermissionRule(permission="edit", pattern="a.md", action=PermissionAction.ASK),
-    ]
-    session = await client.create_session("t", rules)
+    session = await client.create_session("t", Guard(protected=("a.md",)))
 
     assert session.id == "ses_1"
     body = json.loads(route.calls.last.request.content)
+    # Broad allows first, the protected ask last: OpenCode lets the last match win.
     assert body["permission"] == [
         {"permission": "edit", "pattern": "*", "action": "allow"},
+        {"permission": "external_directory", "pattern": "*", "action": "allow"},
+        {"permission": "doom_loop", "pattern": "*", "action": "allow"},
         {"permission": "edit", "pattern": "a.md", "action": "ask"},
     ]
+
+
+@respx.mock
+async def test_sessions_come_back_in_neutral_field_names(client: OpenCodeClient) -> None:
+    respx.get(f"{BASE}/session/ses_2").respond(
+        json={"id": "ses_2", "parentID": "ses_1", "permission": [], "cost": 0.5}
+    )
+    session = await client.get_session("ses_2")
+    assert session.parent_id == "ses_1"
+    assert session.cost == 0.5
+    # What OpenCode sent beyond the declared fields is kept, for the evidence.
+    assert session.model_extra == {"permission": []}
+
+
+@respx.mock
+async def test_permission_requests_come_back_in_neutral_field_names(
+    client: OpenCodeClient,
+) -> None:
+    respx.get(f"{BASE}/permission").respond(
+        json=[{"id": "per_1", "sessionID": "ses_1", "permission": "edit", "patterns": ["a"]}]
+    )
+    [request] = await client.permissions()
+    assert request.session_id == "ses_1"
+    assert request.model_dump()["session_id"] == "ses_1"
+
+
+@respx.mock
+async def test_a_subagent_guard_appends_denies_to_its_own_rules(client: OpenCodeClient) -> None:
+    route = respx.patch(f"{BASE}/session/ses_2").respond(json={})
+    own = {"permission": "task", "pattern": "*", "action": "deny"}
+    await client.guard_subagent("ses_2", Guard(protected=("a.md",)), [own])
+    body = json.loads(route.calls.last.request.content)
+    assert body == {
+        "permission": [own, {"permission": "edit", "pattern": "a.md", "action": "deny"}]
+    }
+
+
+@respx.mock
+async def test_a_subagent_guard_looks_up_rules_it_was_not_given(client: OpenCodeClient) -> None:
+    own = {"permission": "bash", "pattern": "*", "action": "ask"}
+    respx.get(f"{BASE}/session/ses_2").respond(json={"id": "ses_2", "permission": [own]})
+    route = respx.patch(f"{BASE}/session/ses_2").respond(json={})
+    await client.guard_subagent("ses_2", Guard(protected=("a.md",)))
+    body = json.loads(route.calls.last.request.content)
+    assert body == {
+        "permission": [own, {"permission": "edit", "pattern": "a.md", "action": "deny"}]
+    }
+
+
+def test_opencode_errors_are_backend_errors() -> None:
+    missing = NotFoundError("GET", "/session/x", 404)
+    assert isinstance(missing, backend_errors.NotFoundError)
+    assert isinstance(missing, OpenCodeError)
+    assert isinstance(OpenCodeError("GET", "/", 500), backend_errors.BackendError)
 
 
 @respx.mock

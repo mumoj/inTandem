@@ -151,7 +151,7 @@ def test_allow_picks_the_only_pending_permission(state_root: Path) -> None:
     respx.get(f"{URL}/pending").respond(
         json={
             "permissions": [
-                {"id": "per_7", "sessionID": "ses_1", "permission": "edit", "patterns": ["a"]}
+                {"id": "per_7", "session_id": "ses_1", "permission": "edit", "patterns": ["a"]}
             ],
             "questions": [],
         }
