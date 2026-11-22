@@ -708,31 +708,37 @@ function renderToolCall(tc, fallbackKey) {
 async function refreshMessages() {
   if (!lastSpec) return;
   try {
-    const m = await api("/messages?limit=12");
-    const box = $("messages");
-    const shown = m.messages.filter((x) => x.text || (x.tool_calls && x.tool_calls.length) || x.tools.length);
-    box.replaceChildren(...shown.map((x, mi) => {
-      const calls = (x.tool_calls && x.tool_calls.length)
-        ? x.tool_calls
-        : (x.tools || []).map((t) => ({ tool: t, call_id: "", status: "", summary: "", input: null, output: null }));
-      return el("div", { class: "msg " + x.role },
-        el("div", { class: "who" }, x.role === "assistant" ? "implementer" : x.role === "user" ? "prompt" : x.role),
-        x.text ? el("div", { class: "text" }, x.text.length > 2400 ? x.text.slice(0, 2400) + "…" : x.text) : null,
-        calls.length ? el("div", { class: "tools" }, calls.map((tc, ti) => renderToolCall(tc, `${mi}:${ti}:${tc.tool}`))) : null);
-    }));
-    if (!shown.length) box.replaceChildren(el("p", { class: "empty" }, "No messages yet."));
+    renderMessages(await api("/messages?limit=12"));
   } catch (error) { if (error instanceof Unauthorized) throw error; }
+}
+
+function renderMessages(m) {
+  const box = $("messages");
+  const shown = m.messages.filter((x) => x.text || (x.tool_calls && x.tool_calls.length) || x.tools.length);
+  box.replaceChildren(...shown.map((x, mi) => {
+    const calls = (x.tool_calls && x.tool_calls.length)
+      ? x.tool_calls
+      : (x.tools || []).map((t) => ({ tool: t, call_id: "", status: "", summary: "", input: null, output: null }));
+    return el("div", { class: "msg " + x.role },
+      el("div", { class: "who" }, x.role === "assistant" ? "implementer" : x.role === "user" ? "prompt" : x.role),
+      x.text ? el("div", { class: "text" }, x.text.length > 2400 ? x.text.slice(0, 2400) + "…" : x.text) : null,
+      calls.length ? el("div", { class: "tools" }, calls.map((tc, ti) => renderToolCall(tc, `${mi}:${ti}:${tc.tool}`))) : null);
+  }));
+  if (!shown.length) box.replaceChildren(el("p", { class: "empty" }, "No messages yet."));
 }
 
 async function refreshCost() {
   try {
-    const c = await api("/cost");
-    const t = c.total_tokens;
-    const tokens = (t.input || 0) + (t.output || 0) + (t.reasoning || 0)
-      + ((t.cache && t.cache.read) || 0) + ((t.cache && t.cache.write) || 0);
-    const label = tokens >= 1000 ? Math.round(tokens / 1000) + "k tok" : Math.round(tokens) + " tok";
-    $("cost").textContent = "$" + c.total_cost.toFixed(4) + " · " + label;
+    renderCost(await api("/cost"));
   } catch (error) { if (error instanceof Unauthorized) throw error; }
+}
+
+function renderCost(c) {
+  const t = c.total_tokens;
+  const tokens = (t.input || 0) + (t.output || 0) + (t.reasoning || 0)
+    + ((t.cache && t.cache.read) || 0) + ((t.cache && t.cache.write) || 0);
+  const label = tokens >= 1000 ? Math.round(tokens / 1000) + "k tok" : Math.round(tokens) + " tok";
+  $("cost").textContent = "$" + c.total_cost.toFixed(4) + " · " + label;
 }
 
 function describe(e) {
@@ -818,6 +824,7 @@ function enterStopped() {
 
 async function poll() {
   if (stopped && pollTimer === null) return;
+  if (live) return;  // The live feed is pushing everything; polling is only the fallback.
   try {
     renderOverview(await api("/overview"));
     await refreshJournal();
@@ -843,6 +850,76 @@ async function poll() {
     banner.className = "banner";
     banner.textContent = "The supervisor is not answering. It may have stopped. Retrying…";
     setState("offline", "offline");
+  }
+}
+
+// ---- live feed -------------------------------------------------------------
+// One long-lived GET /live: the server pushes each part as it changes, so the
+// page updates within a frame instead of on the next poll. fetch() rather than
+// EventSource, because EventSource cannot send the Authorization header.
+// While it is down, poll() takes over and this reconnects with backoff.
+
+let live = false;
+
+function handleFrame(block) {
+  let event = "message", data = "";
+  for (const line of block.split("\n")) {
+    if (line.startsWith("event:")) event = line.slice(6).trim();
+    else if (line.startsWith("data:")) data += line.slice(5).trimStart();
+  }
+  if (!data) return;
+  const body = JSON.parse(data);
+  switch (event) {
+    case "overview": renderOverview(body); break;
+    case "journal": journalNext = body.next; if (body.entries.length) renderJournal(body.entries); break;
+    case "messages": renderMessages(body); break;
+    case "diff": renderDiffList(body.files); break;
+    case "cost": renderCost(body); break;
+  }
+  if (landedInfo) enterStopped();
+}
+
+async function connectLive() {
+  const response = await fetch("live" + (journalNext == null ? "" : "?after=" + journalNext), {
+    headers: { Authorization: "Bearer " + token },
+    cache: "no-store",
+  });
+  if (response.status === 401) throw new Unauthorized();
+  if (!response.ok || !response.body) throw new Error(response.statusText || "no live feed");
+  const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
+  let buffer = "";
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) return;
+    if (!live) {
+      live = true;
+      failures = 0;
+      if (offline) { offline = false; $("banner").className = "banner hidden"; }
+    }
+    buffer += value;
+    let end;
+    while ((end = buffer.indexOf("\n\n")) >= 0) {
+      const block = buffer.slice(0, end);
+      buffer = buffer.slice(end + 2);
+      if (!block.startsWith(":")) handleFrame(block);
+    }
+  }
+}
+
+async function runLive() {
+  let delay = 500;
+  while (pollTimer !== null) {
+    const started = Date.now();
+    try { await connectLive(); }
+    catch (error) {
+      if (error instanceof Unauthorized) { live = false; poll(); return; }
+    }
+    live = false;
+    if (stopped || landedInfo) { enterStopped(); return; }
+    if (Date.now() - started > 10000) delay = 500;  // It had been up: retry quickly.
+    await poll();
+    await new Promise((resolve) => setTimeout(resolve, delay));
+    delay = Math.min(delay * 2, 5000);
   }
 }
 
@@ -876,6 +953,7 @@ if (!token) {
   setupOpenCode();
   poll();
   pollTimer = setInterval(() => { ticks++; poll(); }, 2000);
+  runLive();
 }
 </script>
 </body>

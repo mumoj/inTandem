@@ -23,7 +23,7 @@ from typing import Annotated
 
 import anyio.to_thread
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, Request, Response, status
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from starlette.datastructures import Headers
 from starlette.types import ASGIApp, Receive, Scope, Send
@@ -31,6 +31,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 from intandem import __version__, worktrees
 from intandem.backend.diff import git_diff
 from intandem.backend.errors import BackendError, NotFoundError
+from intandem.bridge import live
 from intandem.bridge.schemas import (
     AnswerIn,
     DiffOut,
@@ -135,12 +136,24 @@ async def read_status(supervisor: SupervisorDep) -> StatusReport:
 
 @router.get("/overview")
 async def read_overview(supervisor: SupervisorDep) -> OverviewOut:
-    attention = supervisor.attention()
-    return OverviewOut(
-        status=supervisor.status(),
-        attention=attention.reason if attention else None,
-        attention_detail=attention.detail if attention else "",
-        pending=await supervisor.pending(),
+    return await live.overview(supervisor)
+
+
+@router.get("/live", response_class=StreamingResponse)
+async def read_live(
+    request: Request,
+    supervisor: SupervisorDep,
+    after: Annotated[int | None, Query(ge=0)] = None,
+) -> StreamingResponse:
+    """Server-sent events: overview, journal, messages, diff and cost as they change.
+
+    ``after`` resumes the journal from a ``next`` offset, so a reconnecting page
+    gets only what it missed.
+    """
+    return StreamingResponse(
+        live.stream(supervisor, request.is_disconnected, after),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
     )
 
 
