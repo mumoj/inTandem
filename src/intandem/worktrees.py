@@ -15,6 +15,7 @@ from __future__ import annotations
 import hashlib
 import re
 import subprocess
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -180,3 +181,51 @@ def remove(repo: Path, worktree: Worktree) -> None:
     """Delete the worktree and its branch. Only after merging, or to discard the work."""
     git(repo, "worktree", "remove", "--force", str(worktree.path))
     git(repo, "branch", "-D", worktree.branch)
+
+
+def worktree_for_dir(path: Path) -> tuple[Path, Worktree] | None:
+    """Return ``(main_repo, Worktree)`` if ``path`` is a linked git worktree, else ``None``.
+
+    Works for both ``spawn_implementer`` worktrees (``intandem/<name>``) and
+    manually created linked worktrees on any branch. Returns ``None`` when
+    ``path`` is the main working tree itself or not inside a git repository.
+    """
+    resolved = path.expanduser().resolve()
+    try:
+        repo = repo_root(resolved)
+    except GitError:
+        return None
+    if resolved == repo.resolve():
+        return None
+    branch = git(resolved, "branch", "--show-current", check=False).strip()
+    if not branch:
+        return None
+    name = branch.removeprefix(BRANCH_PREFIX) if branch.startswith(BRANCH_PREFIX) else resolved.name
+    return repo, Worktree(name=name, path=resolved, branch=branch)
+
+
+def target_branch(repo: Path) -> str | None:
+    """The current branch checked out in ``repo``, or ``None`` if detached."""
+    return git(repo, "branch", "--show-current", check=False).strip() or None
+
+
+def merge_base(repo: Path, worktree: Worktree) -> tuple[str | None, bool]:
+    """Return ``(base_sha, repo_head_moved)`` between ``repo`` HEAD and ``worktree.branch``."""
+    try:
+        head = git(repo, "rev-parse", "HEAD").strip()
+        base = git(repo, "merge-base", head, worktree.branch).strip()
+    except GitError:
+        return None, False
+    return base, base != head
+
+
+def archive_state(state_root: Path, task_dir: Path) -> Path | None:
+    """Move a finished implementer's state aside under ``landed/``, keeping it as evidence."""
+    from intandem.config import TaskPaths
+
+    root = TaskPaths.for_task(state_root, task_dir).root
+    if not root.exists():
+        return None
+    archive = state_root.expanduser() / "landed" / f"{root.name}-{time.strftime('%Y%m%d-%H%M%S')}"
+    archive.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    return root.rename(archive)

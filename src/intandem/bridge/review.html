@@ -1,0 +1,482 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>inTandem · Review &amp; Merge</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #ffffff; --ink: #1f2328; --muted: #59636e; --line: #d8dee4;
+    --soft: #eef1f4; --accent: #2f6fdb; --work: #7a4fd0; --ok: #1a7f37; --warn: #9a6700;
+    --alert: #c2410c; --bad: #cf222e;
+    --diff-add-bg: #e6ffec; --diff-add-num: #ccffd8; --diff-del-bg: #ffebe9; --diff-del-num: #ffd7d5;
+    --diff-hunk-bg: #ddf4ff; --diff-hunk-ink: #0969da;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0d1117; --panel: #161b22; --ink: #e6edf3; --muted: #9198a1; --line: #30363d;
+      --soft: #1f2630; --accent: #5b9bff; --work: #b18cf2; --ok: #4ccb6b; --warn: #d29922;
+      --alert: #ff8a5c; --bad: #ff6b6b;
+      --diff-add-bg: rgba(46, 160, 67, 0.16); --diff-add-num: rgba(46, 160, 67, 0.28);
+      --diff-del-bg: rgba(248, 81, 73, 0.16); --diff-del-num: rgba(248, 81, 73, 0.28);
+      --diff-hunk-bg: rgba(56, 139, 253, 0.15); --diff-hunk-ink: #79c0ff;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 14px/1.5 ui-sans-serif, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  header {
+    position: sticky; top: 0; z-index: 3; background: var(--panel);
+    border-bottom: 1px solid var(--line); padding: 12px 18px;
+    display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center;
+  }
+  header h1 { font-size: 16px; margin: 0; font-weight: 650; }
+  .branch-pill {
+    font-family: var(--mono); font-size: 12px; background: var(--soft);
+    border: 1px solid var(--line); border-radius: 6px; padding: 2px 8px;
+  }
+  .spacer { flex: 1; }
+  .totals { font-family: var(--mono); font-size: 12.5px; display: inline-flex; gap: 8px; align-items: center; }
+  .add { color: var(--ok); font-weight: 600; }
+  .del { color: var(--bad); font-weight: 600; }
+  button, .btn {
+    font: inherit; font-size: 13px; font-weight: 600; padding: 6px 12px; border-radius: 7px;
+    border: 1px solid var(--line); background: var(--panel); color: var(--ink); cursor: pointer; text-decoration: none;
+  }
+  button:hover, .btn:hover { border-color: var(--muted); }
+  button.primary { background: var(--ok); border-color: var(--ok); color: #fff; }
+  button.danger { color: var(--bad); }
+  button:disabled { opacity: .5; cursor: default; }
+  input[type=text], input[type=search] {
+    font: inherit; padding: 6px 10px; border-radius: 7px;
+    border: 1px solid var(--line); background: var(--panel); color: var(--ink);
+  }
+  .banner { margin: 14px 18px 0; padding: 12px 16px; border-radius: 10px; border: 1px solid var(--line); background: var(--panel); }
+  .banner.ok { border-color: var(--ok); color: var(--ok); }
+  .banner.bad { border-color: var(--bad); color: var(--bad); }
+  .banner.warn { border-color: var(--warn); color: var(--warn); }
+  .hidden { display: none !important; }
+  .shell {
+    max-width: 1440px; margin: 0 auto; padding: 16px 18px 40px;
+    display: grid; gap: 16px; grid-template-columns: 280px minmax(0, 1fr); align-items: start;
+  }
+  @media (max-width: 960px) { .shell { grid-template-columns: minmax(0, 1fr); } }
+  aside {
+    position: sticky; top: 64px; background: var(--panel); border: 1px solid var(--line);
+    border-radius: 10px; padding: 12px; max-height: calc(100vh - 84px);
+    display: flex; flex-direction: column; gap: 8px;
+  }
+  aside h2 { font-size: 11.5px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 0; }
+  .tree { list-style: none; margin: 0; padding: 0; overflow: auto; display: flex; flex-direction: column; gap: 2px; }
+  .tree button {
+    width: 100%; text-align: left; border: 0; background: transparent; padding: 6px 8px;
+    border-radius: 6px; font-family: var(--mono); font-size: 12px; font-weight: 500;
+    display: flex; align-items: center; gap: 6px;
+  }
+  .tree button:hover, .tree button.active { background: var(--soft); }
+  .tree .p { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .tree .st { font-size: 11px; flex-shrink: 0; }
+  .badge {
+    font-size: 10.5px; font-weight: 700; width: 18px; height: 18px; border-radius: 4px;
+    display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0;
+    background: var(--panel); border: 1px solid var(--line); color: var(--muted);
+  }
+  .badge.st-a { color: var(--ok); border-color: var(--ok); }
+  .badge.st-m { color: var(--accent); border-color: var(--accent); }
+  .badge.st-d { color: var(--bad); border-color: var(--bad); }
+  .main-col { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+  .land-card { padding: 14px 16px; display: flex; flex-direction: column; gap: 10px; }
+  .land-head { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; justify-content: space-between; }
+  .land-title { font-weight: 650; font-size: 15px; }
+  .land-sub { color: var(--muted); font-size: 13px; margin: 0; }
+  .land-form { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .land-form input { flex: 1; min-width: 220px; }
+  .result-card { padding: 12px 16px; }
+  .result-card summary { cursor: pointer; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+  .verdict {
+    display: inline-flex; align-items: center; padding: 2px 9px; border-radius: 999px;
+    font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em;
+    background: var(--soft); color: var(--ink);
+  }
+  .verdict.v-done { background: var(--diff-add-bg); color: var(--ok); }
+  .verdict.v-failed, .verdict.v-error { background: var(--diff-del-bg); color: var(--bad); }
+  .verdict.v-blocked, .verdict.v-partial { color: var(--warn); }
+  .result-body { margin-top: 10px; display: flex; flex-direction: column; gap: 8px; font-size: 13.5px; line-height: 1.6; }
+  .result-body p { margin: 0; }
+  .result-body ul { margin: 0; padding-left: 20px; }
+  .result-body li { margin: 3px 0; }
+  .result-body code { font-family: var(--mono); font-size: 12px; background: var(--soft); padding: 1px 5px; border-radius: 4px; }
+  .file-card.focus { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+  .file-head {
+    display: flex; align-items: center; gap: 8px; padding: 8px 12px;
+    background: var(--soft); border-bottom: 1px solid var(--line);
+    font-family: var(--mono); font-size: 12.5px;
+  }
+  .file-head .toggle {
+    border: 0; background: transparent; padding: 2px 4px; font-size: 12px; color: var(--muted);
+  }
+  .file-head .path { flex: 1; min-width: 0; overflow-wrap: anywhere; font-weight: 600; }
+  .diff-wrap { overflow-x: auto; background: var(--panel); }
+  .diff-msg { padding: 12px 14px; color: var(--muted); font-size: 12.5px; font-style: italic; margin: 0; }
+  .diff-table { width: 100%; border-collapse: collapse; font-family: var(--mono); font-size: 12px; line-height: 1.48; }
+  .diff-table td { padding: 0 8px; vertical-align: top; }
+  .diff-table .ln {
+    width: 1%; min-width: 42px; text-align: right; color: var(--muted); user-select: none;
+    border-right: 1px solid var(--line); padding: 0 6px; opacity: 0.85;
+  }
+  .diff-table .code { white-space: pre; padding-left: 10px; }
+  .diff-table tr.d-add { background: var(--diff-add-bg); }
+  .diff-table tr.d-add .ln { background: var(--diff-add-num); }
+  .diff-table tr.d-del { background: var(--diff-del-bg); }
+  .diff-table tr.d-del .ln { background: var(--diff-del-num); }
+  .diff-table tr.d-hunk { background: var(--diff-hunk-bg); color: var(--diff-hunk-ink); }
+  .diff-table tr.d-hunk .ln { background: var(--diff-hunk-bg); color: var(--diff-hunk-ink); }
+  .diff-table tr.d-meta { color: var(--muted); background: var(--soft); }
+  .diff-trunc { padding: 6px 12px; font-size: 12px; color: var(--warn); background: var(--soft); border-top: 1px solid var(--line); }
+  code { font-family: var(--mono); font-size: 12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1 id="title">Review &amp; Merge</h1>
+  <span id="branches" class="branch-pill hidden"></span>
+  <span id="totals" class="totals"></span>
+  <span class="spacer"></span>
+  <button id="refresh" type="button">Refresh</button>
+  <a id="back" class="btn" href="../ui">← Dashboard</a>
+</header>
+<div id="banner" class="banner hidden"></div>
+<div class="shell">
+  <aside>
+    <h2 id="file-count">Files changed</h2>
+    <input id="filter" type="search" placeholder="Filter files…">
+    <ul id="tree" class="tree"></ul>
+  </aside>
+  <div class="main-col">
+    <section id="land-card" class="card land-card">
+      <div class="land-head">
+        <span class="land-title" id="land-title">Loading worktree status…</span>
+        <span id="moved-badge" class="branch-pill hidden" style="color:var(--warn);border-color:var(--warn)">main branch advanced</span>
+      </div>
+      <p id="land-sub" class="land-sub"></p>
+      <div id="land-form" class="land-form hidden">
+        <input id="commit-msg" type="text" placeholder="Commit message for uncommitted edits">
+        <button id="merge-btn" type="button" class="primary">Merge into main</button>
+        <button id="discard-btn" type="button" class="danger">Discard worktree</button>
+      </div>
+    </section>
+    <section id="result-wrap" class="card result-card hidden">
+      <details open>
+        <summary id="result-summary"></summary>
+        <div id="result-body" class="result-body"></div>
+      </details>
+    </section>
+    <div id="diffs"></div>
+  </div>
+</div>
+<script>
+"use strict";
+const hashParams = new URLSearchParams(location.hash.slice(1));
+const targetFile = hashParams.get("file") || "";
+
+function readToken() {
+  const fromLink = hashParams.get("token");
+  try {
+    if (fromLink) sessionStorage.setItem("intandem-token", fromLink);
+    return fromLink || sessionStorage.getItem("intandem-token") || "";
+  } catch { return fromLink || ""; }
+}
+const token = readToken();
+const $ = (id) => document.getElementById(id);
+
+function el(tag, attrs, ...children) {
+  const node = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (k === "class") node.className = v;
+    else if (k.startsWith("on")) node.addEventListener(k.slice(2), v);
+    else node.setAttribute(k, v);
+  }
+  for (const child of children.flat()) {
+    if (child == null || child === false) continue;
+    node.append(child instanceof Node ? child : document.createTextNode(String(child)));
+  }
+  return node;
+}
+
+async function api(path, body) {
+  const response = await fetch("../" + path.replace(/^\//, ""), {
+    method: body === undefined ? "GET" : "POST",
+    headers: { Authorization: "Bearer " + token, ...(body === undefined ? {} : { "Content-Type": "application/json" }) },
+    body: body === undefined ? undefined : JSON.stringify(body),
+    cache: "no-store",
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(typeof data.detail === "string" ? data.detail : response.statusText);
+  return data;
+}
+
+function showBanner(kind, text) {
+  const b = $("banner");
+  b.className = "banner " + kind;
+  b.textContent = text;
+}
+
+function renderInlineCode(text) {
+  const parts = String(text).split(/(`[^`]+`)/g);
+  return parts.map((p) => p.startsWith("`") && p.endsWith("`") && p.length > 2
+    ? el("code", {}, p.slice(1, -1)) : p);
+}
+
+function renderFormattedText(text) {
+  const raw = String(text || "").trim();
+  if (!raw) return [el("p", { class: "land-sub" }, "No summary provided.")];
+  let blocks = raw.split(/\n{2,}/);
+  // If a model wrote one dense paragraph with "Section: ..." clauses, split at clear sentence boundaries.
+  if (blocks.length === 1 && raw.length > 280) {
+    blocks = raw.split(/(?<=\.)\s+(?=(?:Added|Updated|Wired|Docs|Tests|Verification|Fixed|Changed|Removed|Built|Notes?|Summary)\b)/);
+  }
+  const nodes = [];
+  for (const block of blocks) {
+    const lines = block.split("\n").map((l) => l.trim()).filter(Boolean);
+    if (lines.length && lines.every((l) => /^[-*•]\s+/.test(l) || /^\d+\.\s+/.test(l))) {
+      nodes.push(el("ul", {}, lines.map((l) => el("li", {}, renderInlineCode(l.replace(/^(?:[-*•]|\d+\.)\s+/, ""))))));
+    } else {
+      nodes.push(el("p", {}, renderInlineCode(lines.join(" "))));
+    }
+  }
+  return nodes;
+}
+
+function renderPatchTable(patch, truncated) {
+  if (!patch || !patch.trim()) return el("p", { class: "diff-msg" }, "No textual diff available.");
+  const rows = [];
+  let oldLn = 0, newLn = 0;
+  for (const raw of patch.replace(/\r\n/g, "\n").split("\n")) {
+    if (raw.startsWith("diff --git ") || raw.startsWith("index ") || raw.startsWith("--- ") || raw.startsWith("+++ ") || raw.startsWith("new file ") || raw.startsWith("deleted file ")) {
+      continue;
+    }
+    const hunk = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@(.*)$/.exec(raw);
+    if (hunk) {
+      oldLn = parseInt(hunk[1], 10);
+      newLn = parseInt(hunk[2], 10);
+      rows.push(el("tr", { class: "d-hunk" },
+        el("td", { class: "ln" }, "…"),
+        el("td", { class: "ln" }, "…"),
+        el("td", { class: "code" }, raw)));
+    } else if (raw.startsWith("+")) {
+      rows.push(el("tr", { class: "d-add" },
+        el("td", { class: "ln" }, ""),
+        el("td", { class: "ln" }, String(newLn++)),
+        el("td", { class: "code" }, raw)));
+    } else if (raw.startsWith("-")) {
+      rows.push(el("tr", { class: "d-del" },
+        el("td", { class: "ln" }, String(oldLn++)),
+        el("td", { class: "ln" }, ""),
+        el("td", { class: "code" }, raw)));
+    } else if (raw.startsWith("\\")) {
+      rows.push(el("tr", { class: "d-meta" },
+        el("td", { class: "ln" }, ""),
+        el("td", { class: "ln" }, ""),
+        el("td", { class: "code" }, raw)));
+    } else if (oldLn > 0 || newLn > 0) {
+      const text = raw.startsWith(" ") ? raw : " " + raw;
+      rows.push(el("tr", {},
+        el("td", { class: "ln" }, String(oldLn++)),
+        el("td", { class: "ln" }, String(newLn++)),
+        el("td", { class: "code" }, text)));
+    } else if (raw) {
+      rows.push(el("tr", { class: "d-meta" },
+        el("td", { class: "ln" }, ""),
+        el("td", { class: "ln" }, ""),
+        el("td", { class: "code" }, raw)));
+    }
+  }
+  if (!rows.length) return el("p", { class: "diff-msg" }, "Empty file.");
+  return el("div", {},
+    el("table", { class: "diff-table" }, el("tbody", {}, rows)),
+    truncated ? el("div", { class: "diff-trunc" }, "Diff truncated for browser display.") : null);
+}
+
+let allFiles = [];
+const cardByPath = new Map();
+let landed = false;
+
+function renderTree(filter) {
+  const q = (filter || "").toLowerCase();
+  const shown = allFiles.filter((f) => !q || (f.file || "").toLowerCase().includes(q));
+  $("file-count").textContent = `${shown.length} of ${allFiles.length} files`;
+  $("tree").replaceChildren(...shown.map((f) => {
+    const path = f.file || "?";
+    const status = (f.status || "modified")[0].toUpperCase();
+    const cls = status === "A" ? "st-a" : status === "D" ? "st-d" : "st-m";
+    return el("li", {},
+      el("button", {
+        type: "button",
+        title: path,
+        onclick: () => {
+          const card = cardByPath.get(path);
+          if (card) {
+            card.scrollIntoView({ behavior: "smooth", block: "start" });
+            card.classList.add("focus");
+            setTimeout(() => card.classList.remove("focus"), 1600);
+          }
+        },
+      },
+        el("span", { class: "badge " + cls }, status),
+        el("span", { class: "p" }, path),
+        el("span", { class: "st add" }, "+" + (f.additions || 0)),
+        el("span", { class: "st del" }, "-" + (f.deletions || 0))));
+  }));
+}
+
+async function loadAll() {
+  if (landed) return;
+  try {
+    const [land, res] = await Promise.all([api("/land"), api("/result").catch(() => ({ result: null }))]);
+    allFiles = land.files || [];
+    const totalAdd = allFiles.reduce((n, f) => n + (f.additions || 0), 0);
+    const totalDel = allFiles.reduce((n, f) => n + (f.deletions || 0), 0);
+    $("title").textContent = "Review" + (land.worktree_name ? " · " + land.worktree_name : "");
+    document.title = "inTandem · " + $("title").textContent;
+    $("totals").replaceChildren(
+      `${allFiles.length} ${allFiles.length === 1 ? "file" : "files"}`,
+      el("span", { class: "add" }, "+" + totalAdd),
+      el("span", { class: "del" }, "-" + totalDel));
+
+    if (land.is_worktree) {
+      $("branches").textContent = `${land.branch} → ${land.target_branch || "(detached)"}`;
+      $("branches").classList.remove("hidden");
+      $("moved-badge").classList.toggle("hidden", !land.repo_head_moved);
+      $("land-title").textContent = `Merge ${land.branch} into ${land.target_branch || "main worktree"}`;
+      $("land-sub").textContent = land.reason || `Repository: ${land.repo_root}`;
+      $("land-form").classList.remove("hidden");
+      if (!$("commit-msg").value) $("commit-msg").value = land.default_message || "";
+      $("merge-btn").textContent = `Merge into ${land.target_branch || "main"}`;
+      $("merge-btn").disabled = !land.can_merge;
+      $("discard-btn").disabled = land.busy;
+    } else {
+      $("branches").classList.add("hidden");
+      $("moved-badge").classList.add("hidden");
+      $("land-title").textContent = "Working tree diff review";
+      $("land-sub").textContent = land.reason || "Inspect changed files below.";
+      $("land-form").classList.add("hidden");
+    }
+
+    if (res && res.result) {
+      const r = res.result;
+      const vCls = "v-" + String(r.verdict || "").toLowerCase().replace(/[^a-z]/g, "");
+      $("result-summary").replaceChildren(
+        el("span", { class: "verdict " + vCls }, r.verdict || "result"),
+        el("span", {}, `Implementer result (${r.spec_id})`),
+        el("span", { style: "color:var(--muted);font-weight:400;font-size:12px" }, "— claim only, verify against diff below"));
+      $("result-body").replaceChildren(...renderFormattedText(r.summary));
+      $("result-wrap").classList.remove("hidden");
+    } else {
+      $("result-wrap").classList.add("hidden");
+    }
+
+    renderTree($("filter").value);
+    cardByPath.clear();
+    const diffsBox = $("diffs");
+    diffsBox.replaceChildren();
+    if (!allFiles.length) {
+      diffsBox.append(el("section", { class: "card" }, el("p", { class: "diff-msg" }, "No changed files yet.")));
+      return;
+    }
+
+    const cards = allFiles.map((f) => {
+      const path = f.file || "?";
+      const status = (f.status || "modified")[0].toUpperCase();
+      const cls = status === "A" ? "st-a" : status === "D" ? "st-d" : "st-m";
+      const wrap = el("div", { class: "diff-wrap" }, el("p", { class: "diff-msg" }, "Loading diff…"));
+      const toggle = el("button", { type: "button", class: "toggle", title: "Collapse / expand" }, "▾");
+      toggle.addEventListener("click", () => {
+        const hidden = wrap.classList.toggle("hidden");
+        toggle.textContent = hidden ? "▸" : "▾";
+      });
+      const copyBtn = el("button", {
+        type: "button",
+        onclick: async () => {
+          try { await navigator.clipboard.writeText(path); copyBtn.textContent = "Copied"; setTimeout(() => { copyBtn.textContent = "Copy"; }, 1200); }
+          catch { /* ignore */ }
+        },
+      }, "Copy");
+      const card = el("section", { class: "card file-card" + (path === targetFile ? " focus" : "") },
+        el("div", { class: "file-head" },
+          toggle,
+          el("span", { class: "badge " + cls }, status),
+          el("span", { class: "path" }, path),
+          el("span", { class: "add" }, "+" + (f.additions || 0)),
+          el("span", { class: "del" }, "-" + (f.deletions || 0)),
+          copyBtn),
+        wrap);
+      cardByPath.set(path, card);
+      diffsBox.append(card);
+      return { path, wrap };
+    });
+
+    await Promise.all(cards.map(async ({ path, wrap }) => {
+      try {
+        const data = await api("/diff/file?path=" + encodeURIComponent(path));
+        wrap.replaceChildren(renderPatchTable(data.patch, data.truncated));
+      } catch (error) {
+        wrap.replaceChildren(el("p", { class: "diff-msg" }, "Could not load diff: " + error.message));
+      }
+    }));
+
+    if (targetFile && cardByPath.has(targetFile)) {
+      cardByPath.get(targetFile).scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+  } catch (error) {
+    showBanner("bad", "Failed to load review data: " + error.message);
+  }
+}
+
+async function doLand(action) {
+  const promptText = action === "merge"
+    ? "Commit any uncommitted edits and merge this worktree into the main worktree? This will stop the supervisor and remove the temporary worktree."
+    : "Discard this worktree and delete its branch? Unmerged edits will be lost.";
+  if (!confirm(promptText)) return;
+  $("merge-btn").disabled = true;
+  $("discard-btn").disabled = true;
+  try {
+    const body = action === "merge"
+      ? { action: "merge", message: $("commit-msg").value.trim() || null }
+      : { action: "discard" };
+    const out = await api("/land", body);
+    landed = true;
+    if (out.action === "merge") {
+      showBanner("ok", `Merged ${out.branch} into ${out.merged_into}. Worktree removed; evidence kept at ${out.evidence}.`);
+      $("land-title").textContent = `Merged ${out.branch} → ${out.merged_into}`;
+    } else {
+      showBanner("warn", `Discarded ${out.branch}. Worktree removed; evidence kept at ${out.evidence}.`);
+      $("land-title").textContent = `Discarded ${out.branch}`;
+    }
+    $("land-form").classList.add("hidden");
+    $("land-sub").textContent = "This supervisor has stopped cleanly. You can close this tab.";
+  } catch (error) {
+    showBanner("bad", "Land failed: " + error.message);
+    await loadAll();
+  }
+}
+
+$("merge-btn").addEventListener("click", () => doLand("merge"));
+$("discard-btn").addEventListener("click", () => doLand("discard"));
+$("refresh").addEventListener("click", loadAll);
+$("filter").addEventListener("input", (e) => renderTree(e.target.value));
+
+if (!token) {
+  showBanner("bad", "Missing access token. Open this page from the inTandem dashboard link.");
+} else {
+  $("back").href = "../ui#token=" + encodeURIComponent(token);
+  history.replaceState(null, "", location.pathname);
+  loadAll();
+}
+</script>
+</body>
+</html>

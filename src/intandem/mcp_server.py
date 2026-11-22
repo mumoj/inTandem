@@ -243,18 +243,8 @@ def _stop(task_dir: Path, timeout: float = 30.0) -> bool:
 
 
 def _archive_state(task_dir: Path) -> Path | None:
-    """Move a finished implementer's state aside, keeping it as evidence.
-
-    State is keyed by directory, and a later implementer with the same name gets
-    the same directory: left in place, its specs and results would be taken for
-    the new one's.
-    """
-    root = TaskPaths.for_task(_state_root(), task_dir).root
-    if not root.exists():
-        return None
-    archive = _state_root() / "landed" / f"{root.name}-{time.strftime('%Y%m%d-%H%M%S')}"
-    archive.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    return root.rename(archive)
+    """Move a finished implementer's state aside, keeping it as evidence."""
+    return worktrees.archive_state(_state_root(), task_dir)
 
 
 def _running(task_dir: Path) -> Manifest | None:

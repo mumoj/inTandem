@@ -84,6 +84,7 @@ class Translator:
     def __init__(self, session_id: str) -> None:
         self.session_id = session_id
         self._calls: dict[str, dict[str, Any]] = {}
+        self._tool_parts: dict[str, Part] = {}
         self._parts: list[Part] = []
 
     def update(self, params: dict[str, Any]) -> list[BackendEvent]:
@@ -121,6 +122,7 @@ class Translator:
         usage = dig(result, "usage")
         parts, self._parts = self._parts, []
         self._calls.clear()
+        self._tool_parts.clear()
         info = MessageInfo.model_validate(
             {
                 "id": message_id,
@@ -173,11 +175,24 @@ class Translator:
             detail=tool_detail(tool, shown, call),
         )
         if fresh:
-            self._parts.append(
-                Part.model_validate(
-                    {"type": "tool", "tool": tool, "call_id": call_id, "input": _input(call)}
-                )
+            tool_part = Part(
+                type="tool",
+                tool=tool,
+                call_id=call_id,
+                status=shown,
+                input=_input(call),
+                output=_output(call),
             )
+            self._parts.append(tool_part)
+            if call_id:
+                self._tool_parts[call_id] = tool_part
+        elif call_id in self._tool_parts:
+            existing = self._tool_parts[call_id]
+            existing.status = shown
+            if (inp := _input(call)) is not None:
+                existing.input = inp
+            if (out := _output(call)) is not None:
+                existing.output = out
         events = [self._event(EventType.PART_UPDATED, part=part)]
         if status == "completed" and is_edit(call):
             events.append(self._event(EventType.FILE_EDITED))
@@ -188,6 +203,15 @@ class Translator:
 
 def _input(call: dict[str, Any]) -> object:
     return call.get("rawInput") if call.get("rawInput") is not None else call.get("args")
+
+
+def _output(call: dict[str, Any]) -> str | None:
+    raw: object = call.get("rawOutput")
+    if isinstance(raw, str):
+        return raw
+    if isinstance(raw, dict | list) and raw:
+        return dumps(cast(object, raw))
+    return None
 
 
 def user_message(text: str, message_id: str) -> Message:

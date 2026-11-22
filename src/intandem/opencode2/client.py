@@ -321,7 +321,18 @@ def _message(data: dict[str, Any]) -> Message:
         parts.append(Part(type="text", text=str(data.get("text") or "")))
     for item in dig_list(data, "content"):
         kind = dig_str(item, "type") or "unknown"
-        parts.append(Part(type=kind, text=dig_str(item, "text"), tool=dig_str(item, "name")))
+        out = dig_str(item, "output") or dig_str(item, "error")
+        parts.append(
+            Part(
+                type=kind,
+                text=dig_str(item, "text"),
+                tool=dig_str(item, "name"),
+                call_id=dig_str(item, "id"),
+                status=dig_str(item, "status"),
+                input=dig(item, "input"),
+                output=out,
+            )
+        )
     return Message(
         info=MessageInfo(
             id=str(data.get("id", "")),

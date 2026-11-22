@@ -100,6 +100,10 @@ class Part(_Model):
     type: str
     text: str | None = None
     tool: str | None = None
+    call_id: str | None = None
+    status: str | None = None
+    input: Any = None
+    output: str | None = None
 
 
 class Message(_Model):

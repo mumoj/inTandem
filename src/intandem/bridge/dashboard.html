@@ -80,8 +80,48 @@
   .msg.user { border-color: var(--accent); }
   .msg .who { font-size: 12px; color: var(--muted); font-weight: 600; }
   .msg .text { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 220px; overflow: auto; }
-  .tools { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
-  .tool { font-family: var(--mono); font-size: 11.5px; background: var(--soft); border-radius: 5px; padding: 1px 6px; color: var(--muted); }
+  .tools { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
+  .tool-call { border: 1px solid var(--line); border-radius: 7px; background: var(--soft); overflow: hidden; }
+  .tool-call > summary {
+    list-style: none; cursor: pointer; display: flex; align-items: center; gap: 6px;
+    padding: 4px 8px; font-family: var(--mono); font-size: 11.5px; color: var(--ink);
+  }
+  .tool-call > summary::-webkit-details-marker { display: none; }
+  .tool-call > summary .t-name { font-weight: 700; flex-shrink: 0; }
+  .tool-call > summary .t-sum { color: var(--muted); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .tool-call > summary .t-st { font-size: 10.5px; color: var(--muted); flex-shrink: 0; }
+  .tool-call > summary .t-st.st-err { color: var(--bad); }
+  .tool-call > summary .t-st.st-ok { color: var(--ok); }
+  .tool-call .t-body { border-top: 1px solid var(--line); background: var(--panel); padding: 8px 10px; display: flex; flex-direction: column; gap: 6px; }
+  .tool-call .t-label { font-size: 10.5px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); font-weight: 600; }
+  .tool-call pre { margin: 2px 0 0; max-height: 220px; font-size: 11.5px; }
+  .result-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 8px; }
+  .verdict {
+    display: inline-flex; align-items: center; padding: 2px 10px; border-radius: 999px;
+    font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em;
+    background: var(--soft); color: var(--ink);
+  }
+  .verdict.v-done { background: var(--diff-add-bg); color: var(--ok); }
+  .verdict.v-failed, .verdict.v-error { background: var(--diff-del-bg); color: var(--bad); }
+  .verdict.v-blocked, .verdict.v-partial { color: var(--warn); }
+  .result-body {
+    background: var(--soft); border-radius: 8px; padding: 10px 12px;
+    display: flex; flex-direction: column; gap: 8px; font-size: 13.5px; line-height: 1.58;
+  }
+  .result-body p { margin: 0; }
+  .result-body ul { margin: 0; padding-left: 18px; }
+  .result-body li { margin: 2px 0; }
+  .result-body code { font-family: var(--mono); font-size: 12px; background: var(--panel); padding: 1px 5px; border-radius: 4px; border: 1px solid var(--line); }
+  .result-body.clamped { max-height: 180px; overflow: hidden; mask-image: linear-gradient(180deg, #000 72%, transparent); }
+  .result-claim { font-size: 12px; color: var(--muted); margin: 6px 0 0; }
+  .section-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 0 0 10px; }
+  .section-head h2 { margin: 0; }
+  .review-link { font-size: 12px; padding: 3px 9px; }
+  .file-open {
+    display: inline-flex; align-items: center; border-left: 1px solid var(--line);
+    color: var(--muted); padding: 0 9px; font-size: 12px; text-decoration: none; flex-shrink: 0;
+  }
+  .file-open:hover { color: var(--accent); background: var(--panel); }
   .timeline { list-style: none; margin: 0; padding: 0; max-height: 72vh; overflow: auto; }
   .timeline li { display: grid; grid-template-columns: 58px minmax(0, 1fr); gap: 8px; padding: 6px 0; border-top: 1px solid var(--soft); }
   .timeline li:first-child { border-top: 0; }
@@ -97,13 +137,14 @@
   .files-bar .del { color: var(--bad); font-weight: 600; }
   .files { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
   .file-item { border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: var(--panel); }
+  .file-row-wrap { display: flex; align-items: stretch; background: var(--soft); }
   .file-row {
-    width: 100%; display: flex; align-items: center; gap: 8px; padding: 7px 10px;
-    border: 0; border-radius: 0; background: var(--soft); color: var(--ink);
+    flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; padding: 7px 10px;
+    border: 0; border-radius: 0; background: transparent; color: var(--ink);
     font-family: var(--mono); font-size: 12.5px; font-weight: 500; text-align: left; cursor: pointer;
   }
-  .file-row:hover { filter: brightness(0.97); }
-  @media (prefers-color-scheme: dark) { .file-row:hover { filter: brightness(1.12); } }
+  .file-row-wrap:hover { filter: brightness(0.97); }
+  @media (prefers-color-scheme: dark) { .file-row-wrap:hover { filter: brightness(1.12); } }
   .file-row .chev { width: 12px; color: var(--muted); flex-shrink: 0; }
   .file-row .badge {
     font-size: 10.5px; font-weight: 700; width: 18px; height: 18px; border-radius: 4px;
@@ -179,7 +220,10 @@
       <div id="messages"><p class="empty">No messages yet.</p></div>
     </section>
     <section>
-      <h2>Result and changes</h2>
+      <div class="section-head">
+        <h2>Result and changes</h2>
+        <a id="review-tab" class="btn review-link" target="_blank" rel="noreferrer">Review &amp; merge ↗</a>
+      </div>
       <div id="result"><p class="empty">No result for this spec yet.</p></div>
       <div id="diff-bar" class="files-bar hidden"></div>
       <ul class="files" id="diff"></ul>
@@ -374,15 +418,69 @@ async function act(call) {
   poll();
 }
 
+let resultExpanded = false;
+
+function renderInlineCode(text) {
+  return String(text).split(/(`[^`]+`)/g).map((part) =>
+    part.startsWith("`") && part.endsWith("`") && part.length > 2
+      ? el("code", {}, part.slice(1, -1)) : part);
+}
+
+function renderFormattedSummary(text) {
+  const raw = String(text || "").trim();
+  if (!raw) return [el("p", { class: "sub" }, "No summary provided.")];
+  let blocks = raw.split(/\n{2,}/);
+  if (blocks.length === 1 && raw.length > 280) {
+    blocks = raw.split(/(?<=\.)\s+(?=(?:Added|Updated|Wired|Docs|Tests|Verification|Fixed|Changed|Removed|Built|Notes?|Summary)\b)/);
+  }
+  const nodes = [];
+  for (const block of blocks) {
+    const lines = block.split("\n").map((l) => l.trim()).filter(Boolean);
+    if (lines.length && lines.every((l) => /^[-*•]\s+/.test(l) || /^\d+\.\s+/.test(l))) {
+      nodes.push(el("ul", {}, lines.map((l) => el("li", {}, renderInlineCode(l.replace(/^(?:[-*•]|\d+\.)\s+/, ""))))));
+    } else {
+      nodes.push(el("p", {}, renderInlineCode(lines.join(" "))));
+    }
+  }
+  return nodes;
+}
+
+function renderResultCard(r) {
+  const verdict = String(r.verdict || "done");
+  const vCls = "v-" + verdict.toLowerCase().replace(/[^a-z]/g, "");
+  const summary = String(r.summary || "");
+  const long = summary.length > 480;
+  const body = el("div", { class: "result-body" + (long && !resultExpanded ? " clamped" : "") },
+    renderFormattedSummary(summary));
+  const extras = Object.entries(r).filter(([k, v]) => !["spec_id", "verdict", "summary"].includes(k) && v != null && v !== "");
+  const extraNodes = extras.map(([k, v]) => el("p", {},
+    el("strong", {}, k + ": "),
+    typeof v === "string" ? renderInlineCode(v) : el("code", {}, JSON.stringify(v))));
+  if (extraNodes.length) body.append(...extraNodes);
+  const toggle = long ? el("button", {
+    type: "button",
+    style: "margin-top:6px;font-size:12px;padding:3px 9px",
+    onclick: () => {
+      resultExpanded = !resultExpanded;
+      body.classList.toggle("clamped", !resultExpanded);
+      toggle.textContent = resultExpanded ? "Show less" : "Show full summary";
+    },
+  }, resultExpanded ? "Show less" : "Show full summary") : null;
+  return el("div", {},
+    el("div", { class: "result-head" },
+      el("span", { class: "verdict " + vCls }, verdict),
+      r.spec_id ? el("code", {}, r.spec_id) : null),
+    body,
+    toggle,
+    el("p", { class: "result-claim" }, "Implementer's own claim — verify against the diff below or in the Review & merge tab."));
+}
+
 async function refreshResult() {
   const box = $("result");
   try {
     const r = await api("/result");
     box.replaceChildren(r.result
-      ? el("div", {},
-          el("p", { class: "headline" }, "Verdict: " + r.result.verdict),
-          el("p", { class: "sub" }, r.result.summary || ""),
-          el("p", { class: "sub" }, "This is the implementer's own claim. The planner checks it against the diff."))
+      ? renderResultCard(r.result)
       : el("p", { class: "empty" }, lastSpec ? "No result for this spec yet." : "No spec yet."));
   } catch (error) { if (error instanceof Unauthorized) throw error; }
   refreshDiff();
@@ -525,8 +623,15 @@ function renderDiffList(files) {
       el("span", { class: "stats-inline" },
         el("span", { class: "add" }, "+" + (f.additions || 0)),
         el("span", { class: "del" }, "-" + (f.deletions || 0))));
+    const openLink = el("a", {
+      class: "file-open",
+      href: "ui/review#token=" + encodeURIComponent(token) + "&file=" + encodeURIComponent(path),
+      target: "_blank",
+      rel: "noreferrer",
+      title: "Open in Review & merge tab",
+    }, "↗");
     if (isOpen) loadFileDiff(path, body, changed);
-    return el("li", { class: "file-item" }, row, body);
+    return el("li", { class: "file-item" }, el("div", { class: "file-row-wrap" }, row, openLink), body);
   });
   list.replaceChildren(...items);
 }
@@ -538,16 +643,56 @@ async function refreshDiff() {
   } catch { renderDiffList([]); }
 }
 
+const openTools = new Set();
+
+function formatToolInput(input) {
+  if (input == null) return "";
+  if (typeof input === "string") return input;
+  try { return JSON.stringify(input, null, 2); } catch { return String(input); }
+}
+
+function renderToolCall(tc, fallbackKey) {
+  const key = tc.call_id || fallbackKey;
+  const st = tc.status || "";
+  const stCls = st === "error" || st === "failed" ? "st-err" : st === "completed" ? "st-ok" : "";
+  const hasDetail = tc.input != null || (tc.output != null && tc.output !== "");
+  const details = el("details", { class: "tool-call" },
+    el("summary", {},
+      el("span", { class: "t-name" }, tc.tool),
+      tc.summary ? el("span", { class: "t-sum" }, tc.summary) : null,
+      st ? el("span", { class: "t-st " + stCls }, st) : null));
+  if (openTools.has(key)) details.open = true;
+  if (hasDetail) {
+    const body = el("div", { class: "t-body" });
+    if (tc.input != null) {
+      body.append(el("div", {}, el("div", { class: "t-label" }, "Input"), el("pre", {}, formatToolInput(tc.input))));
+    }
+    if (tc.output != null && tc.output !== "") {
+      body.append(el("div", {}, el("div", { class: "t-label" }, "Output"), el("pre", {}, tc.output)));
+    }
+    details.append(body);
+    details.addEventListener("toggle", () => {
+      if (details.open) openTools.add(key); else openTools.delete(key);
+    });
+  }
+  return details;
+}
+
 async function refreshMessages() {
   if (!lastSpec) return;
   try {
-    const m = await api("/messages?limit=8");
+    const m = await api("/messages?limit=12");
     const box = $("messages");
-    const shown = m.messages.filter((x) => x.text || x.tools.length);
-    box.replaceChildren(...(shown.length ? shown : []).map((x) => el("div", { class: "msg " + x.role },
-      el("div", { class: "who" }, x.role === "assistant" ? "implementer" : x.role === "user" ? "prompt" : x.role),
-      x.text ? el("div", { class: "text" }, x.text.length > 2400 ? x.text.slice(0, 2400) + "…" : x.text) : null,
-      x.tools.length ? el("div", { class: "tools" }, x.tools.map((t) => el("span", { class: "tool" }, t))) : null)));
+    const shown = m.messages.filter((x) => x.text || (x.tool_calls && x.tool_calls.length) || x.tools.length);
+    box.replaceChildren(...shown.map((x, mi) => {
+      const calls = (x.tool_calls && x.tool_calls.length)
+        ? x.tool_calls
+        : (x.tools || []).map((t) => ({ tool: t, call_id: "", status: "", summary: "", input: null, output: null }));
+      return el("div", { class: "msg " + x.role },
+        el("div", { class: "who" }, x.role === "assistant" ? "implementer" : x.role === "user" ? "prompt" : x.role),
+        x.text ? el("div", { class: "text" }, x.text.length > 2400 ? x.text.slice(0, 2400) + "…" : x.text) : null,
+        calls.length ? el("div", { class: "tools" }, calls.map((tc, ti) => renderToolCall(tc, `${mi}:${ti}:${tc.tool}`))) : null);
+    }));
     if (!shown.length) box.replaceChildren(el("p", { class: "empty" }, "No messages yet."));
   } catch (error) { if (error instanceof Unauthorized) throw error; }
 }
@@ -657,6 +802,7 @@ if (!token) {
   $("banner").classList.remove("hidden");
   setState("offline", "no access");
 } else {
+  $("review-tab").href = "ui/review#token=" + encodeURIComponent(token);
   // Keep the token out of the address bar once it is read, so it is not shoulder-surfed or bookmarked by accident.
   history.replaceState(null, "", location.pathname);
   setupOpenCode();

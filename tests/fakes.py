@@ -53,6 +53,7 @@ class FakeSession:
     title: str
     rules: list[PermissionRule]
     prompts: list[str] = field(default_factory=list[str])
+    extra_messages: list[Message] = field(default_factory=list[Message])
     cost: float = 0.0
     tokens: TokenUsage = field(default_factory=TokenUsage)
     parent_id: str | None = None
@@ -137,7 +138,7 @@ class FakeOpenCode:
                 parts=[Part(type="text", text=text)],
             )
             for index, text in enumerate(session.prompts)
-        ]
+        ] + list(session.extra_messages)
         return messages[-limit:] if limit else messages
 
     async def prompt(

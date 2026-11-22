@@ -490,9 +490,15 @@ class Supervisor:
     async def diff(self) -> list[FileDiff]:
         return await self.api.diff(self._require_current().session_id)
 
-    async def file_diff(self, file_path: str) -> tuple[str, bool]:
+    async def file_diff(self, file_path: str, *, base: str | None = None) -> tuple[str, bool]:
         """Unified diff for one file in the task worktree."""
-        return await git_file_patch(self.task_dir, file_path)
+        return await git_file_patch(self.task_dir, file_path, base=base)
+
+    async def capture_evidence(self) -> None:
+        """Persist the active spec's messages and totals before landing or shutdown."""
+        record = self.state.current
+        if record is not None:
+            await self._capture_evidence(record)
 
     async def cost(self) -> CostReport:
         """Spend per spec, read from the backend's own per-session totals."""

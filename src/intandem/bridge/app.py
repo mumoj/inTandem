@@ -21,13 +21,15 @@ from dataclasses import dataclass
 from importlib.resources import files
 from typing import Annotated
 
+import anyio.to_thread
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, Request, Response, status
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from starlette.datastructures import Headers
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from intandem import __version__
+from intandem import __version__, worktrees
+from intandem.backend.diff import git_diff
 from intandem.backend.errors import BackendError, NotFoundError
 from intandem.bridge.schemas import (
     AnswerIn,
@@ -36,6 +38,9 @@ from intandem.bridge.schemas import (
     DirectiveOut,
     FilePatchOut,
     JournalOut,
+    LandIn,
+    LandInfoOut,
+    LandOut,
     MessageOut,
     MessagesOut,
     Ok,
@@ -197,11 +202,108 @@ async def read_diff(supervisor: SupervisorDep) -> DiffOut:
 async def read_file_diff(
     supervisor: SupervisorDep, path: Annotated[str, Query(min_length=1, max_length=1024)]
 ) -> FilePatchOut:
+    base: str | None = None
+    linked = await anyio.to_thread.run_sync(worktrees.worktree_for_dir, supervisor.task_dir)
+    if linked is not None:
+        base, _ = await anyio.to_thread.run_sync(worktrees.merge_base, linked[0], linked[1])
     try:
-        patch, truncated = await supervisor.file_diff(path)
+        patch, truncated = await supervisor.file_diff(path, base=base)
     except ValueError as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
     return FilePatchOut(file=path, patch=patch, truncated=truncated)
+
+
+@router.get("/land")
+async def read_land(supervisor: SupervisorDep) -> LandInfoOut:
+    """Inspect whether this task's worktree can be merged into the main repository."""
+    linked = await anyio.to_thread.run_sync(worktrees.worktree_for_dir, supervisor.task_dir)
+    busy = supervisor.tracker.busy
+    if linked is None:
+        files_list = (
+            await supervisor.diff()
+            if supervisor.state.current is not None
+            else await git_diff(supervisor.task_dir)
+        )
+        return LandInfoOut(
+            is_worktree=False,
+            busy=busy,
+            can_merge=False,
+            reason="This task is already in the main working tree; no separate branch to merge.",
+            files=files_list,
+        )
+    repo, wt = linked
+    target = await anyio.to_thread.run_sync(worktrees.target_branch, repo)
+    base, moved = await anyio.to_thread.run_sync(worktrees.merge_base, repo, wt)
+    files_list = await git_diff(supervisor.task_dir, base)
+    reason = ""
+    if busy:
+        reason = "Implementer is still working; wait for it to finish or stop the turn first."
+    elif not target:
+        reason = f"{repo} is on a detached HEAD; check out a branch there before merging."
+    elif not files_list:
+        reason = "No changes to merge yet."
+    return LandInfoOut(
+        is_worktree=True,
+        worktree_name=wt.name,
+        branch=wt.branch,
+        target_branch=target,
+        repo_root=str(repo),
+        repo_head_moved=moved,
+        busy=busy,
+        can_merge=not reason,
+        reason=reason,
+        default_message=f"inTandem: {wt.name}",
+        files=files_list,
+    )
+
+
+@router.post("/land")
+async def land_worktree(body: LandIn, request: Request, supervisor: SupervisorDep) -> LandOut:
+    """Merge a finished implementer's linked worktree into the main repo, or discard it."""
+    linked = await anyio.to_thread.run_sync(worktrees.worktree_for_dir, supervisor.task_dir)
+    if linked is None:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "this task is not in a linked git worktree; nothing to merge or discard",
+        )
+    repo, wt = linked
+    if body.action == "merge" and supervisor.tracker.busy:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            f"{wt.name} is still working; wait for it or stop the turn first",
+        )
+    await supervisor.capture_evidence()
+    on_finish: Callable[[], None] = request.app.state.on_finish
+    try:
+        if body.action == "discard":
+            await anyio.to_thread.run_sync(worktrees.remove, repo, wt)
+            supervisor.journal.append("worktree_landed", disposition="discard", branch=wt.branch)
+            on_finish()
+            return LandOut(
+                action="discard",
+                name=wt.name,
+                branch=wt.branch,
+                discarded=True,
+                evidence=str(supervisor.paths.root),
+            )
+        commit_msg = (body.message or "").strip() or f"inTandem: {wt.name}"
+        committed = await anyio.to_thread.run_sync(worktrees.commit_all, wt, commit_msg)
+        into = await anyio.to_thread.run_sync(worktrees.merge, repo, wt, f"Merge {wt.branch}")
+        await anyio.to_thread.run_sync(worktrees.remove, repo, wt)
+    except worktrees.GitError as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+    supervisor.journal.append(
+        "worktree_landed", disposition="merge", branch=wt.branch, merged_into=into
+    )
+    on_finish()
+    return LandOut(
+        action="merge",
+        name=wt.name,
+        branch=wt.branch,
+        merged_into=into,
+        committed_leftovers=committed,
+        evidence=str(supervisor.paths.root),
+    )
 
 
 @router.get("/cost")
@@ -296,6 +398,11 @@ def _dashboard() -> HTMLResponse:
     return HTMLResponse(page, headers=dashboard_headers())
 
 
+def _review() -> HTMLResponse:
+    page = files("intandem.bridge").joinpath("review.html").read_text(encoding="utf-8")
+    return HTMLResponse(page, headers=dashboard_headers())
+
+
 def _error(status_code: int) -> Callable[[Request, Exception], Awaitable[Response]]:
     async def handler(_request: Request, exc: Exception) -> Response:
         return JSONResponse({"detail": str(exc)}, status_code=status_code)
@@ -327,4 +434,5 @@ def create_app(
     app.add_exception_handler(NotFoundError, _error(status.HTTP_404_NOT_FOUND))
     app.include_router(router)
     app.add_api_route("/ui", _dashboard, methods=["GET"], include_in_schema=False)
+    app.add_api_route("/ui/review", _review, methods=["GET"], include_in_schema=False)
     return app
