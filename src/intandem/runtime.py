@@ -1,9 +1,10 @@
 """One supervised task: build every part, run its workers, stop them together.
 
 A task has no server of its own. ``open_task`` builds its supervisor and bridge
-app, attached to its harness backend (the hub's shared OpenCode 1.x/2.x server
-or a Claude Code backend), and the hub mounts the app beside the others. Its
-workers run in one process, on the hub's event loop, under one ``TaskGroup``:
+app, attached to its harness backend (the hub's shared OpenCode 1.x/2.x server,
+a Claude Code backend or an Antigravity ACP backend), and the hub mounts the app
+beside the others. Its workers run in one process, on the hub's event loop,
+under one ``TaskGroup``:
 
 * the event pump (the backend's stream into the supervisor),
 * the monitor (result file, protected files, stall checks on a timer), and
@@ -119,8 +120,9 @@ async def make_backend(
 ) -> tuple[ImplementerBackend, OpenCodeLogin | None, Version | None]:
     """The task's implementer backend for ``settings.harness``, plus OpenCode's login and version.
 
-    The claude harness runs a ``claude`` CLI per session and needs no shared
-    server, so it has no OpenCode login or version to hand the dashboard.
+    The claude harness runs a ``claude`` CLI per session, and the antigravity
+    harness one ``agy acp`` per task. Neither needs the shared server, so they
+    have no OpenCode login or version to hand the dashboard.
     """
     if settings.harness == "claude":
         # Imported here: the claude extra is optional.
@@ -130,6 +132,13 @@ async def make_backend(
         await stack.enter_async_context(backend)
         await backend.health()  # No CLI on PATH fails the start, not the first spec.
         return backend, None, None
+    if settings.harness == "antigravity":
+        from intandem.antigravity.backend import AntigravityBackend
+
+        antigravity = AntigravityBackend(settings.task_dir, cli=settings.antigravity_bin)
+        await stack.enter_async_context(antigravity)
+        await antigravity.health()  # Starts `agy acp`: a missing or dead CLI fails the start.
+        return antigravity, None, None
     login, client, version = await _connect(stack, settings)
     return client, login, version
 

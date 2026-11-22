@@ -34,14 +34,19 @@ class Settings(BaseSettings):
     model: str | None = None
     """``provider/model`` for the implementer. ``None`` uses the harness's default."""
 
-    harness: Literal["opencode", "claude"] = "opencode"
-    """What runs the implementer: OpenCode, or Claude Code through the Agent SDK.
+    harness: Literal["opencode", "claude", "antigravity"] = "opencode"
+    """What runs the implementer: OpenCode, Claude Code through the Agent SDK, or
+    the Antigravity CLI (``agy``) over ACP.
 
     ``claude`` needs the ``claude`` extra and a logged-in ``claude`` CLI, and its
-    models are ``anthropic/<model>``."""
+    models are ``anthropic/<model>``. ``antigravity`` needs a signed-in ``agy``
+    and takes its bare model IDs (``agy models``) or ``antigravity/<model>``."""
 
     claude_bin: str = "claude"
     """The Claude Code CLI the claude harness runs, with the user's own login."""
+
+    antigravity_bin: str = "agy"
+    """The Antigravity CLI the antigravity harness runs as ``agy acp``."""
 
     protected: list[str] = Field(default_factory=list)
     """Glob patterns, relative to the task, that the implementer must not edit."""

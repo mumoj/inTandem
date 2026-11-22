@@ -1,12 +1,12 @@
 ---
 name: intandem-planner
-description: Plan, submit, monitor, and review work delegated to an implementation model (OpenCode or Claude Code) through inTandem. Use when a task is delegated to inTandem, or when asked to check on, unblock, or review that work.
+description: Plan, submit, monitor, and review work delegated to an implementation model (OpenCode, Claude Code or Antigravity) through inTandem. Use when a task is delegated to inTandem, or when asked to check on, unblock, or review that work.
 ---
 
 # Planning work with an inTandem implementer
 
 You are responsible for defining the task and accepting the result. The implementer (running on
-OpenCode or Claude Code) writes the code. Give it a bounded specification, monitor its progress,
+OpenCode, Claude Code or Antigravity) writes the code. Give it a bounded specification, monitor its progress,
 and inspect the changes yourself rather than relying on its summary.
 
 When inTandem's MCP tools are available, use them instead of the CLI commands below. The workflow
@@ -19,10 +19,14 @@ task.
 ## Choosing a harness and model
 
 - Default harness is `opencode` (1.x or 2.x). Pass `harness="claude"` on `start_implementer`,
-  `spawn_implementer`, or `submit_spec` to run Claude Code on the user's subscription login.
-- Use `list_models()` (or `list_models(harness="claude")`) to see available models and agents.
+  `spawn_implementer`, or `submit_spec` to run Claude Code on the user's subscription login, or
+  `harness="antigravity"` to run the Antigravity CLI (`agy`) on its own sign-in.
+- Use `list_models()` (or `list_models(harness="claude")` / `list_models(harness="antigravity")`)
+  to see available models and agents.
 - OpenCode takes `provider/model` and optional `agent` (e.g. `build`, `plan`). Claude Code takes
-  bare model names (e.g. `claude-sonnet-4-6`) or `anthropic/<model>`, and no `agent`.
+  bare model names (e.g. `claude-sonnet-4-6`) or `anthropic/<model>`, and no `agent`. Antigravity
+  takes bare agy model IDs (e.g. `gemini-4-neon-high`) or `antigravity/<model>`, and `agent` is
+  its mode (`default`, `accept-edits`, `auto`, `plan`).
 
 ## Workflow
 
