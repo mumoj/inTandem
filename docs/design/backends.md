@@ -1,373 +1,160 @@
-# Implementer backends: a neutral layer, and how Codex fits it
+# Implementer backends: neutral layer, OpenCode 1/2, Claude Code, and Codex fit
 
-Status: proposal, 2026-11-22. Nothing here is built yet.
+Status: **implemented** (`intandem/backend/`, `intandem/opencode/`, `intandem/opencode2/`,
+`intandem/claude/`). Only **Codex** (and optional land-time protected-path refusal) remains
+unbuilt.
 
 ## Why
 
-inTandem drives one kind of implementer: OpenCode. The goal is to let each
-implementer pick its harness (OpenCode, Claude Code, Codex) while the hub,
-supervisor, bridge and MCP tools stay the same.
+inTandem originally drove one implementer harness: OpenCode 1.x. Because every implementer
+already gets its own worktree, branch, and supervisor, mixing harnesses is naturally a
+per-implementer choice. Separating the supervisor, bridge, activity tracker, and notifier from
+OpenCode's wire shapes lets OpenCode 1.x, OpenCode 2.x, Claude Code, and future harnesses (Codex)
+plug into the same hub and MCP tools.
 
-Every implementer already gets its own worktree, branch and supervisor, so
-mixing harnesses is a per-implementer choice. What stops it today is that
-OpenCode's vocabulary reaches past `intandem/opencode/`:
-
-| Leak | Where |
-|---|---|
-| `OpenCodeAPI`, `OpenCodeError`, `NotFoundError` | `supervisor/supervisor.py`, `bridge/app.py` |
-| OpenCode models (`Session`, `Message`, `Part`, `PermissionRequest`, `ModelRef`, ...) | `supervisor/supervisor.py`, `bridge/schemas.py` |
-| OpenCode permission rules (`PermissionRule`, last match wins) | `supervisor/protected.py` |
-| OpenCode bus events, matched on raw `type` strings and dug by key (`properties.part.state.status`) | `supervisor/activity.py`, `supervisor/supervisor.py`, `notify.py` |
-| Shared OpenCode host lifecycle | `runtime.py`, `hub.py`, `mcp_server.py`, `cli/main.py` |
-
-The last row stays OpenCode-specific on purpose: it is how *that* backend
-runs. Only the first four rows are the neutral layer's job.
-
-## Design
-
-A new package, `intandem/backend/`, owns the vocabulary. `intandem/opencode/`
-becomes one adapter that speaks it.
+## Neutral layer (`intandem/backend/`) — as built
 
 ```
 intandem/backend/
-  protocol.py   ImplementerBackend (the Protocol the supervisor depends on)
-  models.py     neutral data: SessionInfo, SessionState, TokenUsage, Transcript
-                messages, ApprovalRequest, QuestionRequest, FileDiff, ModelChoice
-  guard.py      Guard: protected path patterns + "run unattended". No rule syntax.
-  events.py     BackendEvent + EventType
+  protocol.py   ImplementerBackend (pull-shaped Protocol the supervisor depends on)
+  models.py     neutral pydantic models (Session, SessionStatus, Message, Part,
+                PermissionRequest, QuestionRequest, FileDiff, TokenUsage, ModelRef)
+  guard.py      Guard: protected path patterns + unattended flag (no rule syntax)
+  events.py     BackendEvent, EventType (StrEnum), PartUpdate, ASKED/SETTLED/TURN_OVER
   errors.py     BackendError, NotFoundError
-intandem/opencode/
-  client.py     OpenCodeClient implements ImplementerBackend
-  translate.py  OpenCode event/model -> neutral (from_opencode)
-  rules.py      Guard -> OpenCode PermissionRule list (moved out of protected.py)
+  jsonpath.py   dig / dig_str / dig_list shared across adapters
+  stream.py     StreamRecorder (raw stream writer with oversized-line stubbing)
+  diff.py       git_head / git_diff reusable worktree diff helpers
 ```
 
-Decisions:
+Key design choices:
 
-1. **The Protocol keeps a pull shape** (`permissions()`, `questions()`,
-   `events()`). OpenCode is pull; the Claude Agent SDK and Codex are push. A
-   push adapter keeps a pending dict and serves it through the same methods.
-   That is less work than turning the supervisor into callback code.
-2. **Event type strings stay as they are** (`session.idle`,
-   `permission.asked`, `message.part.updated`, ...). They become *inTandem's*
-   names that every adapter emits, not OpenCode's. Existing journals, the
-   dashboard and `stream_type` keep working unchanged.
-3. **Consumers read typed fields, not raw dicts.** `BackendEvent` has
-   `session_id`, `parent_session_id`, `request_id`, `status`, `error`,
-   `aborted`, `part` (a small neutral part: kind, call id, tool, tool status,
-   detail, text field). The adapter does the `dig()`ging. `raw` keeps the
-   native line for the stream recorder.
-4. **Protection is a `Guard`, enforced by the backend as well as it can, and
-   always by the content hash.** `ProtectedFiles.snapshot()/changes()` stay in
-   the supervisor because they work for any harness. Only `rules()` moves to
-   the OpenCode adapter.
-5. **`agent` stays an optional string** passed through to the backend. A
-   backend with no agents rejects a non-null value with a clear error.
-6. **Subagents get `guard_subagent(session_id, guard, inherited=None)`**
-   instead of a general `set_guard`. Guarding a subagent is the only time the
-   supervisor changes a live session's policy, and it has to keep the agent's
-   own rules. `inherited` carries them opaquely when an event reported them.
-   With `None`, the backend looks them up itself.
-7. **Neutral models use snake_case field names.** The bridge's `/pending`
-   JSON now says `session_id`, not OpenCode's `sessionID`. The CLI, MCP server
-   and dashboard all read it through the same models. Evidence files keep
-   OpenCode's extra fields as they came.
+1. **Pull-shaped Protocol (`permissions()`, `questions()`, `events()`).** OpenCode is pull;
+   Claude Agent SDK and Codex are push. Push adapters park futures in a pending dict and push
+   `BackendEvent`s into a queue, keeping the supervisor free of callback re-entrancy.
+2. **Event type strings stay stable (`session.idle`, `permission.asked`, `message.part.updated`,
+   ...).** They are now *inTandem's* `EventType` values, so existing journals, `stream_type`, and
+   the dashboard work identically across harnesses.
+3. **Typed fields on `BackendEvent`.** Consumers never `dig()` into raw dicts. `PartUpdate`
+   normalizes tool state to `running: bool` and carries a bounded `detail`. `native` carries the
+   harness payload for `$INTANDEM_EVENT` alerts (populated lazily on alert events in OpenCode 1.x),
+   and `raw` carries the native line for `StreamRecorder`.
+4. **Protection is a `Guard`, always backed by content hashes.** Each backend enforces `Guard`
+   as best it can (OpenCode rulesets, Claude `PreToolUse` hook); `ProtectedFiles.snapshot()` /
+   `changes()` remain in the supervisor for every harness.
+5. **Subagents use `guard_subagent(session_id, guard, inherited=None)`.** OpenCode appends `deny`
+   rules onto the subagent's existing rules (fetching them if `inherited` is `None`); Claude Code
+   treats it as a no-op because subagents share the session's `PreToolUse` hook.
+6. **Neutral `ModelRef` and request IDs.** `ModelRef` accepts both `provider/model` and bare model
+   names (`claude-sonnet-4-6`), letting OpenCode enforce `provider/model` while Claude Code (and
+   future Codex) accept bare names. Bridge `PermissionId` and `QuestionId` accept any path-safe
+   token rather than OpenCode-only prefixes.
+7. **Lazy shared host.** `Hub` starts the shared `opencode serve` lazily on the first OpenCode
+   task (or `list_models()` for OpenCode), so Claude-only sessions never install or boot OpenCode.
 
-## Specs
+## OpenCode 1.x (`intandem/opencode/`) — as built
 
-Submit in order. Each one leaves the tree green with no change in behaviour.
-Work only after the current uncommitted edits to `hub.py`, `mcp_server.py` and
-`docs/overview.svg` are committed.
+- `client.py`: `OpenCodeClient` implements `ImplementerBackend`, converts camelCase wire models
+  at its edge while preserving extra fields for evidence, and enforces `provider/model`.
+- `translate.py`: `from_opencode(Event) -> BackendEvent`; lazily serializes `native` only for
+  alert events (`PERMISSION_ASKED`, `QUESTION_ASKED`, `ERROR`).
+- `rules.py`: `guard_to_rules(guard)` and `subagent_rules(inherited, guard)` (last match wins).
+- `server.py` / `host.py` / `install.py`: probes `/global/health` then `/api/info` to detect 1.x
+  vs 2.x; sets both `OPENCODE_SERVER_PASSWORD` and `OPENCODE_PASSWORD`; downloads checksum-verified
+  OpenCode `2.3.2` into `~/.opencode/bin` when `opencode` is missing (unless `INTANDEM_NO_INSTALL`
+  is set or a custom `INTANDEM_OPENCODE_BIN` was given).
 
-Checks for both specs:
+## OpenCode 2.x (`intandem/opencode2/`) — as built
 
-```
-uv run ruff check && uv run ruff format --check
-uv run pyright
-uv run pytest
-```
+Recorded against a real `2.3.2` server driven by `tests/scripted_llm.py` (fixtures in
+`tests/fixtures/opencode2`). Full E2E suite passes against both `2.3.2` and `1.18.30`.
 
-### S-B1: neutral backend Protocol and models
+- **Detection.** 2.x returns HTML for unknown paths including `/global/health`. `probe_version` /
+  `aprobe_version` require `application/json` on `/global/health`, then fall back to `/api/info`.
+  `runtime.make_backend` picks `OpenCodeClient` or `OpenCode2Client` from the server's major version.
+- **Package (`intandem/opencode2/`):**
+  - `client.py` (`OpenCode2Client`): `/api/...` routes, `location[directory]` scoping, `metadata.title`
+    on create, sequential `/model` + `/agent` + `/prompt`, session-scoped permission/form replies
+    (remembering `request_id -> session_id` with lazy lookup), form-to-question translation,
+    paginated reverse-order message fetching (`order=desc` preserved across pages), and
+    `metadata["diff"]` mapped for the dashboard.
+  - `rules.py`: `{action, resource, effect}` ruleset (last match wins, verified on `2.3.2`).
+  - `translate.py`: stateful `Translator` remembering tool call names and input summaries between
+    `session.tool.input.started` and `session.tool.success`/`failed`.
+- **CLI & MCP:** `list_models()` awaits `hub.ready_opencode()`, uses `host.binary` (working with
+  auto-installed binaries), and queries `/api/agent` on 2.x (which dropped `opencode agent list`).
+  `inTandem attach` passes both `OPENCODE_SERVER_PASSWORD` and `OPENCODE_PASSWORD`.
+- **Open note:** 2.x subagent sessions (`subagent` tool) were not recorded live; `guard_subagent`
+  relies on `session.created` carrying `parentID` and `permissions` as documented, with the
+  content-hash check as backstop.
 
-> **Outcome.** The supervisor, bridge and protected-files code depend on a new
-> `intandem.backend` package instead of `intandem.opencode` for the client
-> Protocol, errors and data models. OpenCode behaviour is unchanged.
->
-> **Do:**
-> - Create `src/intandem/backend/` with `protocol.py` (`ImplementerBackend`:
->   the same methods as today's `OpenCodeAPI`, typed with neutral models),
->   `models.py`, `guard.py` and `errors.py` (`BackendError`, `NotFoundError`).
-> - Neutral models carry only the fields something in inTandem reads today.
->   Grep each current OpenCode model's usages to find them. Keep pydantic with
->   `extra="allow"` like `opencode/models.py`.
-> - `create_session` and `set_session_permission` take a `Guard` (protected
->   patterns + unattended flag) instead of `list[PermissionRule]`. Rename the
->   latter to `set_guard`.
-> - Move `UNATTENDED_RULES` and `ProtectedFiles.rules()` into
->   `src/intandem/opencode/rules.py` as `guard_to_rules(guard)`.
->   `supervisor/protected.py` keeps `snapshot()` and `changes()` and imports
->   nothing from `intandem.opencode`.
-> - `OpenCodeClient` satisfies `ImplementerBackend` and converts at its edge.
->   `OpenCodeError` subclasses `BackendError`. OpenCode's `NotFoundError`
->   subclasses the neutral one.
-> - Keep `OpenCodeAPI` as an alias of `ImplementerBackend` for one release.
->
-> **May touch:** `src/intandem/backend/**` (new),
-> `src/intandem/opencode/{client,models,rules}.py`,
-> `src/intandem/supervisor/{supervisor,protected}.py`,
-> `src/intandem/bridge/{app,schemas}.py`, `tests/fakes.py`, `tests/test_*.py`.
->
-> **Must not touch:** `opencode/events.py`, `supervisor/activity.py`,
-> `notify.py` (events are S-B2), `hub.py`, `runtime.py`, `mcp_server.py`,
-> `cli/`, `docs/`.
->
-> **Done when:** the three checks pass, no test is deleted or skipped, and
-> `grep -rn "intandem.opencode" src/intandem/supervisor src/intandem/bridge`
-> shows only `opencode.events` / `opencode.jsonpath` imports (those go in S-B2).
+## Claude Code (`intandem/claude/`) — as built
 
-### S-B2: neutral backend events
+Optional `claude` extra (`claude-agent-sdk>=0.2.187,<0.3`), imported lazily inside
+`runtime.make_backend`. Picked via `harness="claude"` on `start_implementer`, `spawn_implementer`,
+`submit_spec`, `inTandem serve --harness claude`, or `INTANDEM_HARNESS=claude`.
 
-> **Outcome.** The supervisor, activity tracker and notifier consume
-> `intandem.backend.events.BackendEvent` with typed fields. Nothing outside
-> `intandem/opencode/` reads OpenCode's event `properties` by key.
->
-> **Do:**
-> - Add `src/intandem/backend/events.py`: `EventType` (a `StrEnum` whose values
->   are the strings consumers match today, such as `session.idle`,
->   `permission.asked`, `message.part.updated`, `file.edited` and
->   `server.connected`, plus `other`) and `BackendEvent` (`type`, `native_type`,
->   `session_id`, `parent_session_id`, `request_id`, `status`, `retry_detail`,
->   `error_name`, `error_message`, `aborted`, `part`, `delta_field`, `raw`).
-> - Add `src/intandem/opencode/translate.py` with `from_opencode(Event) ->
->   BackendEvent`. All `dig()` calls on OpenCode event payloads move there.
-> - `ImplementerBackend.events()` yields `BackendEvent`. The OpenCode client
->   translates. The stream recorder still writes `raw`.
-> - `tests/fakes.py`: `event(kind, **properties)` keeps its signature and
->   returns `from_opencode(...)`, so existing tests read the same.
-> - The journal's `stream_type` stays the same string as before.
->
-> **May touch:** `src/intandem/backend/events.py`,
-> `src/intandem/opencode/{events,translate,client}.py`,
-> `src/intandem/supervisor/{activity,supervisor}.py`, `src/intandem/notify.py`,
-> `tests/**`.
->
-> **Must not touch:** `bridge/dashboard.html`, `hub.py`, `runtime.py`,
-> `mcp_server.py`, `cli/`, `docs/`.
->
-> **Done when:** the three checks pass, no test is deleted or skipped, and
-> `grep -rn "intandem.opencode" src/intandem --include=*.py | grep -v
-> "^src/intandem/opencode/"` lists only `runtime.py`, `hub.py`,
-> `mcp_server.py` and `cli/main.py` (host lifecycle).
+- **Auth.** Runs the user's own `claude` CLI on `PATH` (or `INTANDEM_CLAUDE_BIN`) as `cli_path`,
+  using `claude auth login` (subscription). Never sets `ANTHROPIC_API_KEY`; logs a
+  `billing_warning` in the journal if that env var is present.
+- **Mapping:**
+  - `health`: cached `claude --version` (fails fast at task start if CLI is missing).
+  - `create_session`: allocates `ses_<hex>` + a UUID for SDK `session_id`, records `git_head`, and
+    disconnects older sessions' CLIs (bumping a per-session `epoch` under `session.lock` so an
+    in-flight `connect()` cannot query a retired or aborted session).
+  - `prompt`: accepts bare model names or `anthropic/<model>`, rejects non-Anthropic providers and
+    non-null `agent`, connects one `ClaudeSDKClient` per session (`permission_mode="default"`),
+    switches models with `client.set_model`, and calls `client.query`.
+  - `events`: translates `AssistantMessage`, `UserMessage` (`tool_result` + `FILE_EDITED` for edit
+    tools), `StreamEvent` deltas, `ResultMessage`, and `RateLimitEvent` into `BackendEvent`s.
+  - `permissions` / `questions`: `PreToolUse` hook (`on_failure="block"`, 7-day timeout) intercepts
+    edits to protected paths before user `permissions.allow` rules can allow them; `can_use_tool`
+    re-checks protected paths, handles `AskUserQuestion` (`updated_input={"answers": ...}`), and
+    allows or parks other tools depending on `Guard.unattended`. Permission metadata includes
+    `diff` (for edits/writes) and `command` (for Bash) so the dashboard shows previews.
+  - `diff`: uses shared `backend/diff.py` (`git_diff` against session-start `HEAD` + untracked).
+  - `guard_subagent`: no-op (subagents run inside the same CLI session and hit the same hook).
+- **Limits:**
+  - Sessions do not survive a supervisor restart (supervisor detects missing session and
+    redelivers the spec to a new session).
+  - Shell writes to protected files are caught after the fact by the content hash, as in OpenCode.
+  - `AskUserQuestion` via `can_use_tool` and cumulative `total_cost_usd` were verified against the
+    SDK source and unit tests; `tests/test_claude_e2e.py` (`INTANDEM_E2E_CLAUDE=1`) smoke-tests a
+    live turn and protected edit.
 
-### Later (not specced yet)
+## Next: How Codex fits (not built yet)
 
-- `harness` field on `spawn_implementer` / `start_implementer` / `submit_spec`
-  (`opencode` by default), and a backend factory in `runtime.py`.
-- Diff from `git diff` in the worktree for every backend, instead of each
-  harness's own diff.
-- Land-time check: `land_implementer` refuses a diff that touches a protected
-  path, for backends that cannot block an edit in advance.
-- `OpenCode2Backend` (see below), then `ClaudeCodeBackend` (Agent SDK),
-  then `CodexBackend`.
+Checked against `codex-cli 0.154.0`, using `codex app-server generate-json-schema` and the
+[app-server docs](https://learn.chatgpt.com/docs/app-server.md). Items marked **verify** were not
+tried live.
 
-## Claude Code backend: as built
+**Transport.** `codex app-server` speaks JSON-RPC 2.0 over stdio (newline-delimited JSON without
+`"jsonrpc"`). Handshake: `initialize` with `clientInfo {name, title, version}`, then `initialized`
+notification. Needs a small asyncio stdio JSON-RPC client (~200 lines) with version pinning.
 
-`intandem/claude/` (`backend.py`, `translate.py`, `guard.py`, `sdk.py`), on
-`claude-agent-sdk` 0.2.187 (bundling Claude Code 2.1.330), checked against the
-SDK's installed source. Optional: the `claude` extra, imported lazily, so
-inTandem without it still works and `harness="claude"` fails with an install
-hint. Picked per implementer with `harness` on `start_implementer` /
-`spawn_implementer`, or `INTANDEM_HARNESS`. `runtime.make_backend(stack,
-settings)` builds the backend; a claude task never waits for the shared
-OpenCode server.
-
-**Auth.** Each session runs the user's own `claude` (found on PATH, passed as
-`cli_path`, not the SDK's bundled copy), so it uses `claude auth login`: the
-subscription. inTandem never sets `ANTHROPIC_API_KEY`. If it is set, the CLI
-bills that key instead, and the journal gets a `billing_warning`.
-
-| `ImplementerBackend` | Claude Agent SDK |
-|---|---|
-| `health` | `claude --version`, cached. No CLI on PATH is a `BackendError`, at task start |
-| `create_session(title, guard)` | Bookkeeping only: an inTandem id (`ses_<hex>`), plus a UUID passed as the SDK's `session_id`. Stops older sessions' CLIs (one spec at a time) |
-| `prompt(text, model, agent)` | Returns at once. A background task connects one `ClaudeSDKClient` per session (`cwd` = the task directory, `permission_mode="default"`), then `client.query(text)`. A changed model is `client.set_model`. `agent` set: `BackendError` |
-| `events` | One queue for the backend. `CONNECTED` first. Prompt → `STATUS busy`. `AssistantMessage` text/thinking → `PART_UPDATED` text/reasoning, `tool_use` → `PART_UPDATED` tool running. `tool_result` → tool finished, and `FILE_EDITED` after a successful Edit/Write/MultiEdit/NotebookEdit. `StreamEvent` text/thinking deltas → `PART_DELTA` text. `ResultMessage` → `STATUS idle`, then `IDLE`, or `ERROR` (`is_error`). A rejected `RateLimitEvent` → `STATUS retry` |
-| `abort` | `client.interrupt()`; the next result is `ERROR` with `aborted`. Pending requests of that session are refused first |
-| `permissions` / `reply_permission` | `can_use_tool` parks `per_<n>` in a pending map (permission = tool name, patterns = path or command) and awaits the reply. `always` allows that tool for the rest of the session |
-| `questions` / `reply_question` | `AskUserQuestion` reaches `can_use_tool`. It parks `que_<n>`; a reply allows the tool with `answers` (question text → labels joined by `, `) added to its input; a rejection denies it |
-| `messages` | A transcript the adapter keeps: each prompt, and each `AssistantMessage` with its text, reasoning and tool parts |
-| `get_session` | `cost` = the last `ResultMessage.total_cost_usd` (the CLI's running total for the session); tokens = sum of each result's `usage` (per turn in a streaming session) |
-| `diff` | `git diff --numstat` / `--name-status` against the commit at session start, plus untracked files as added |
-| `session_status` | busy from prompt until its `ResultMessage` |
-| `guard_subagent` | No-op: subagents run in the same CLI session, through the same hook and callback |
-
-**The guard is a `PreToolUse` hook.** The SDK says `can_use_tool` is only
-consulted when the CLI's own rules come out at "ask": a call allowed by the
-user's `permissions.allow` settings, or by a permission mode, never reaches it.
-A `PreToolUse` hook sees every call, subagents' included. So the hook checks
-Edit/Write/MultiEdit/NotebookEdit paths against `Guard.protected` (relative to
-the task, as `fnmatch` *or* the same `glob` the content hash uses, so new files
-count) and, on a match, parks the call as a permission and answers `allow` or
-`deny` itself once the planner replies. The matcher has a 7-day timeout and
-`on_failure="block"`, so a hook that fails or times out stops the edit.
-`always` on a protected edit allows that tool on those paths only.
-`can_use_tool` re-checks protected paths, then allows the rest when the guard
-is unattended, or parks it for the planner when it is not.
-
-**Limits.**
-
-- A shell command that writes a protected file is not an edit tool. The content
-  hash catches it after the fact, as it does for OpenCode.
-- Sessions don't survive a restart: the supervisor finds the session gone and
-  redelivers the spec to a new one. (A reconnect within one run resumes the
-  CLI session with `resume`.)
-- `AskUserQuestion` going through `can_use_tool`, the answer shape, and the
-  cost being a running total were read from the SDK and CLI, not tried live. The
-  opt-in smoke test (`INTANDEM_E2E_CLAUDE=1`) covers a turn and a protected
-  edit, not questions.
-- The hub still starts the shared OpenCode at launch, so OpenCode must be
-  installed even for claude-only use. `list_models` lists OpenCode's models.
-- No agents, and only `anthropic/` (or `claude/`) models.
-
-## OpenCode 2: a new adapter, not a version bump
-
-Status: built on `feat/opencode-v2`. See "OpenCode 2: as built" below for what changed after
-recording a real server.
-
-OpenCode 2.0 rebuilt the server API from scratch ([migration guide](https://opencode.ai/docs/migrate-v1)),
-so changing `SUPPORTED_MAJOR` is not enough. From the V2 reference and its
-[OpenAPI document](https://opencode.ai/docs/openapi.json) (read in part; field
-shapes are **verify**):
-
-| inTandem needs | V1 (today) | V2 |
-|---|---|---|
-| Routes and scoping | root paths, `directory` | `/api/...`, `location[directory]` query param |
-| Health | health route | `GET /api/info` (identity and readiness) |
-| Create / update session | ruleset `{permission, pattern, action}` | `POST /api/session` / `PATCH /api/session/{id}` with `permissions`. Config rules are now `{action, resource, effect}` |
-| Status map | `session_status()` | No map. `GET /api/session/active`, plus `session.execution.*` events |
-| Prompt | prompt with `providerID/modelID`, `agent` | `POST /api/session/{id}/prompt`. Model and agent are set separately (`/model`, `/agent`) |
-| Abort | abort | `POST /api/session/{id}/interrupt?resume=` |
-| Permissions | list + reply | `/api/session/{id}/permission`, `.../{requestID}/reply` |
-| Questions | question routes | Replaced by **forms**: `/api/session/{id}/form`, `.../form/{formID}/reply` |
-| Diff | whole session | `GET /api/session/{id}/diff?from=&to=` (per-turn ranges) |
-| Events | `/global/event`, `session.idle`, `message.part.*`, `question.*`, `file.edited` | `/api/event`. `session.execution.succeeded/failed/interrupted`, `session.text.*`, `session.tool.*`, `session.usage.updated`, `filesystem.changed`, `permission.asked/replied` |
-| Auth | Basic, configurable username | Basic. Username is always `opencode`, password from `OPENCODE_PASSWORD` |
-
-What this means:
-
-- Almost every client call and every event name changes. That is exactly the
-  boundary the neutral layer draws: V2 becomes `intandem/opencode2/` (client +
-  `from_opencode2` translation) behind `ImplementerBackend`, and the supervisor
-  doesn't change. It is also the cheapest real test of S-B1/S-B2, because it
-  has the same shape as V1.
-- The V2 installer replaces the 1.x binary and has no V1 compatibility mode.
-  Until a V2 adapter exists and passes E2E, upgrading the machine breaks
-  inTandem. `require_supported` already guards against that.
-- The OpenAPI document still calls itself an "Experimental HttpApi surface"
-  (`info.version` 0.0.1). Pin a tested 2.x minor range, the way 1.x is pinned.
-- Before writing the adapter: install V2 somewhere isolated (a container, or a
-  separate `npm` prefix) and save `/doc` (or `openapi.json`) plus a recorded
-  event stream as fixtures. Then write the spec against real shapes.
-
-## How Codex fits
-
-Checked against `codex-cli 0.154.0`, using `codex app-server
-generate-json-schema` and the [app-server docs](https://learn.chatgpt.com/docs/app-server.md).
-Items marked **verify** were not tried live.
-
-**Transport.** `codex app-server` speaks JSON-RPC 2.0 over stdio by default:
-newline-delimited JSON, with no `"jsonrpc"` field. Handshake: send
-`initialize` with `clientInfo {name, title, version}`, then the `initialized`
-notification. There is no official Python client, so inTandem needs a small
-asyncio stdio JSON-RPC client (about 200 lines). Pin a supported version range
-the way `opencode/server.py` does.
-
-**One process per implementer.** One app-server can host many threads, each
-with its own `cwd`, so it could be shared like OpenCode. Start with one
-process per implementer anyway: a crash stays isolated, and "health" just
-means the process is alive.
+**One process per implementer.** Start with one `codex app-server` per task for crash isolation.
 
 | `ImplementerBackend` | Codex app-server |
 |---|---|
-| `health` | Process alive, and `initialize` succeeded (gives the version) |
+| `health` | Process alive and `initialize` succeeded (gives the version) |
 | `create_session(title, guard)` | `thread/start {cwd: worktree, model, sandbox, approvalPolicy, developerInstructions}`. Session id = `thread.id` |
-| `prompt(text, model, agent)` | `turn/start {threadId, input: [{type: "text", text}], model}`. `agent` is not supported: reject it |
-| `abort` | `turn/interrupt {threadId, turnId}`. The adapter tracks the current `turnId` from `turn/started` |
-| `session_status` | busy between `turn/started` and `turn/completed`. `retry` when an `error` notification has `willRetry: true` |
-| `events` | `turn/completed` (status completed/interrupted/failed) → `session.idle` or `session.error` (interrupted → `aborted`). `item/started` and `item/completed` → `message.part.updated`. `item/agentMessage/delta` → `message.part.delta` |
-| `permissions` / `reply_permission` | Server requests `item/commandExecution/requestApproval` and `item/fileChange/requestApproval`. The JSON-RPC request id is the `request_id`. Replies: once → `accept`, always → `acceptForSession`, reject → `decline` (`cancel` also interrupts the turn). `serverRequest/resolved` → `permission.replied` |
-| `questions` / `reply_question` | `item/tool/requestUserInput {questions: [{id, header, question, options}], isBlocking}`. Reply `{answers: {<question id>: {answers: [...]}}}`. Marked **experimental**: needs `capabilities.experimentalApi = true` |
-| `diff` | `turn/diff/updated` carries a unified diff per turn, and `fileChange` items list `changes[{path, kind, diff}]`. Use `git diff` in the worktree anyway |
-| `get_session` cost/tokens | `thread/tokenUsage/updated {total, last}` with input, cached, output and reasoning token counts. No cost field: report 0 on a ChatGPT plan |
-| `messages` | `thread/read`, or a transcript the adapter keeps from `item/completed` |
+| `prompt(text, model, agent)` | `turn/start {threadId, input: [{type: "text", text}], model}`. `agent` not supported: reject |
+| `abort` | `turn/interrupt {threadId, turnId}` (track current `turnId` from `turn/started`) |
+| `session_status` | busy between `turn/started` and `turn/completed`; `retry` when `error` has `willRetry: true` |
+| `events` | `turn/completed` → `IDLE` or `ERROR` (`interrupted` → `aborted`); `item/started` + `item/completed` → `PART_UPDATED` (plus `FILE_EDITED` on `fileChange` completion); `item/agentMessage/delta` → `PART_DELTA` |
+| `permissions` / `reply_permission` | Server requests `item/commandExecution/requestApproval` and `item/fileChange/requestApproval`. Replies: `once` → `accept`, `always` → `acceptForSession`, `reject` → `decline` (`serverRequest/resolved` → `PERMISSION_REPLIED`) |
+| `questions` / `reply_question` | `item/tool/requestUserInput` (marked **experimental**; needs `capabilities.experimentalApi = true`). In v1, can decline/answer empty and record in journal |
+| `diff` | Shared `backend/diff.py` (`git_diff` in the worktree) |
+| `get_session` cost/tokens | `thread/tokenUsage/updated {total, last}`; no cost field (report 0 on ChatGPT plan) |
+| `messages` | `thread/read` (needed for restart recovery via `_session_contains`, plus `thread/resume` on restart — **verify**) |
 | model listing | `model/list` → `data[{id, displayName, isDefault, ...}]` |
 
-**Protected files: the weak spot.** OpenCode can ask before editing a matching
-path. Codex has no path rules: `sandbox` is `read-only`, `workspace-write` or
-`danger-full-access`, and `item/fileChange/requestApproval` carries `itemId`
-but not the paths. (The paths are on the matching `fileChange` item from
-`item/started`.) There are two options:
+**Protected files (the weak spot for Codex).** Codex has no path-based rules:
 
-- **A, strict:** `sandbox: read-only` with `approvalPolicy: on-request`. Every
-  file change asks first. The adapter looks up the item's paths, accepts
-  unprotected ones itself, and forwards protected ones to the planner as a
-  permission. The cost: shell commands that write (test caches, builds) also
-  need approval. That could be noisy. **Verify.**
-- **B, simple:** `sandbox: workspace-write` with `approvalPolicy: never`. Edits
-  inside the worktree just happen, and protection relies on the content-hash
-  check (already in `protected.py`) plus the land-time refusal above.
-
-Recommendation: start with B, because it needs no new mechanism. Try A once
-the adapter works. `approvalPolicy` also has a `granular` form (`rules`,
-`sandbox_approval`, ...) that might sit between the two. **Verify.**
-
-**Auth.** `codex login` with a ChatGPT plan, or an API key. As with Claude:
-don't pass a key if you want the plan used. The app-server docs say this auth
-is not permitted for commercial or hosted services, which is fine for
-personal use.
-
-**Experimental surface to avoid in v1:** `tool/requestUserInput` (questions)
-is experimental, and so are `permissions` profiles on `thread/start` and
-`process/*`. A v1 Codex adapter can run without questions: answer
-`requestUserInput` with an empty answer, and record it so the planner sees it
-in the journal.
-
-## OpenCode 2: as built
-
-Recorded against a real 2.3.2 server (released 2026-11-18), driven by the
-scripted model, before writing a line of the adapter. The recordings are in
-`tests/fixtures/opencode2`.
-
-- **Detection.** 2.x answers every unknown path, `/global/health` included,
-  with its web app's HTML. `probe_version` asks `/global/health` for JSON, then
-  `/api/info`. The host and each task both read the version from the running
-  server, so a host upgraded between runs is driven correctly.
-- **Package.** `intandem/opencode2/`: `client.py` (`OpenCode2Client`),
-  `rules.py` (`{action, resource, effect}`), `translate.py` (a stateful
-  `Translator`, because only a tool call's first event names the tool). The
-  runtime picks the client by major version.
-- **What the earlier table got wrong or left open:**
-  - No session title on create. inTandem's title goes in `metadata.title`.
-  - Rules: last match wins, as in 1.x. Verified: `[allow edit *, ask edit
-    instruction.md]` stops that edit for a human.
-  - Replying to a permission or a form needs its session id. The client
-    remembers it from the listing, and looks it up when it doesn't know.
-  - Forms: a question's options are field options with a `value`. Answers are
-    keyed by field, and a multiselect takes a list.
-  - Messages come newest first and paged. The client pages back and reverses.
-  - There is no per-directory instance to dispose of, and no status map:
-    `/api/session/active` lists the running sessions, and the rest are idle.
-  - The tools were renamed: `bash` → `shell`, and `filePath` → `path`.
-  - `opencode agent list` is gone. `list_models` asks the server's
-    `/api/agent` instead.
-- **Install.** No OpenCode on PATH or in `~/.opencode/bin` → inTandem downloads
-  release `v2.3.2` for this OS and CPU (x64 baseline without AVX2, musl
-  detected) from GitHub, checks it against the release's `SHA256SUMS`, and
-  puts it in `~/.opencode/bin`. A custom `INTANDEM_OPENCODE_BIN` is never
-  installed. `INTANDEM_NO_INSTALL=1` refuses.
-- **Verified:** the full E2E suite passes against 2.3.2
-  (`INTANDEM_TEST_OPENCODE=<2.x binary>`) and against 1.18.30 (on PATH).
-- **Not done:** subagent sessions in 2.x (the `subagent` tool) were not
-  recorded, so `guard_subagent` relies on `session.created` carrying
-  `parentID` and `permissions`, as the schema says. The content hash still
-  catches a protected edit if that assumption fails.
+- **A, strict:** `sandbox: read-only` + `approvalPolicy: on-request`. Adapter correlates `itemId`
+  with `fileChange` paths from `item/started`, auto-accepts unprotected edits, and forwards
+  protected ones. Likely noisy for commands that write build/test caches. **Verify.**
+- **B, simple (start here):** `sandbox: workspace-write` + `approvalPolicy: never`. Rely on
+  `ProtectedFiles` content-hash checks (triggered immediately on `FILE_EDITED`) plus a land-time
+  protected-path refusal in `land_implementer`. `approvalPolicy`'s `granular` form may sit
+  between A and B (**verify**).

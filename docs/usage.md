@@ -12,39 +12,65 @@ codex mcp add inTandem -- inTandem mcp                    # Codex
 After registration, the planner can delegate a task through inTandem while retaining
 responsibility for the specification and review. For example, ask it to have an implementation
 model write tests for `citations.py`. It uses tools such as `submit_spec`, `wait`,
-`get_result`, `get_pending`, `reply_permission`, `send_directive`, and `finish` to submit work,
-monitor it, and review the result.
+`get_result`, `get_pending`, `reply_permission`, `answer_question`, `send_directive`, and
+`finish` to submit work, monitor it, and review the result.
 
 ### Session lifecycle
 
-When the planner connects, `inTandem mcp` starts one OpenCode server in the background. The
-first `submit_spec` starts a supervisor for the planner's project. Use `start_implementer` only
-to set a default model or protected files.
+When the planner connects, `inTandem mcp` starts its local hub server. The first `submit_spec`
+(or `start_implementer`) starts a supervisor for the planner's project. Use `start_implementer`
+when you want to set a default harness, default model, or protected files before submitting a
+spec.
 
-The MCP process and its OpenCode child exist for the planner session. When the planner
-disconnects or exits, supervisors finish and preserve their evidence, then OpenCode stops. Task
-state remains on disk and can be resumed in a later session.
+If a task uses the `opencode` harness, the hub starts one shared `opencode serve` lazily on first
+use and shares it across OpenCode tasks. Tasks that use `harness="claude"` run their own `claude`
+CLI per session and never start or install OpenCode.
 
-### Models and subagents
+The MCP process and any child backends exist for the planner session. When the planner disconnects
+or exits, supervisors finish and preserve their evidence, then the hub shuts down. Task state
+remains on disk and can be resumed in a later session.
 
-Each `submit_spec` can set a `model` (`provider/model`) and `agent` (`build`, `plan`, or an agent
-from your OpenCode configuration). Use `list_models` to see the models OpenCode reports.
+## Harnesses, models, and subagents
 
-If an implementer delegates to an OpenCode subagent, that subagent's permission requests also
-block the spec. Its activity keeps the spec active, and protected-file rules apply to its
-session as well.
+Each implementer picks a harness (`opencode` by default, or `claude`) on `start_implementer`,
+`spawn_implementer`, `submit_spec`, or `inTandem serve --harness`, or globally via
+`INTANDEM_HARNESS`.
 
-For independent parts of a task, the planner can call `spawn_implementer` once for each part.
+### OpenCode (`harness="opencode"`)
+
+- Drives OpenCode **1.x** or **2.x** automatically by probing the running server (`/global/health`
+  for 1.x, `/api/info` for 2.x). If no binary is found on `PATH` or `~/.opencode/bin`, inTandem
+  downloads a checksum-verified 2.x release (`2.3.2`) unless `INTANDEM_NO_INSTALL=1` is set.
+- `model` must be `provider/model` (e.g. `openrouter/qwen/qwen3-coder` or `openai/gpt-5.6-luna`).
+- `agent` selects an OpenCode agent (`build`, `plan`, or an agent from your OpenCode config).
+- `list_models()` lists the models and agents OpenCode reports.
+- If an implementer delegates to an OpenCode subagent, that subagent's permission requests also
+  block the spec, its activity keeps the spec active, and protected-file deny rules are added to
+  its session.
+
+### Claude Code (`harness="claude"`)
+
+- Requires the optional `claude` extra (`uv tool install 'intandem[claude]'`) and a signed-in
+  `claude` CLI (`claude auth login`).
+- Runs the user's `claude` CLI on `PATH` (or `INTANDEM_CLAUDE_BIN`) with your subscription login.
+  inTandem never sets `ANTHROPIC_API_KEY`; if it is set in the environment, the CLI bills that API
+  key instead and inTandem records a `billing_warning` in the journal.
+- `model` can be a bare Claude model name (`claude-sonnet-4-6`, `claude-opus-4-6`,
+  `claude-haiku-4-5`) or `anthropic/<model>`. Non-Anthropic providers are refused.
+- `agent` is not supported and is rejected with a clear error.
+- `list_models(harness="claude")` returns Claude model options without starting OpenCode.
+- Protected files are blocked before the edit runs by a fail-closed `PreToolUse` hook (which also
+  covers Claude subagents), backed up by `can_use_tool` and the supervisor's content-hash monitor.
 
 ## Parallel implementers
 
-Use parallel implementers when a task has independent pieces. Each one has a name, a separate
-worktree, and its own supervisor, so its changes can be reviewed, merged, or discarded
-independently:
+Use parallel implementers when a task has independent pieces. Each one has a name, a separate Git
+worktree, its own supervisor, and its own harness choice, so you can mix OpenCode and Claude Code
+side by side and review, merge, or discard each piece independently:
 
 ```text
 spawn_implementer(name="farewell", text=..., model="openai/gpt-5.6-luna")
-spawn_implementer(name="subtract", text=..., model="openai/gpt-5.6-luna")
+spawn_implementer(name="subtract", text=..., harness="claude", model="claude-sonnet-4-6")
 wait_any()                                   # wakes when either one needs the planner
 land_implementer(name="farewell")            # review: the diff against where it forked
 land_implementer(name="farewell", action="merge")
@@ -67,8 +93,7 @@ the merge conflicts, it is aborted and the repository is left unchanged. `discar
 work instead. Both operations stop the supervisor, remove the worktree and branch, and retain
 state under `landed/`. Files created by checks, such as `__pycache__`, are not committed.
 
-Parallel implementers share [one process and one OpenCode server](architecture.md#one-process-one-opencode).
-Once OpenCode is running for the session, additional implementers reuse it.
+Parallel OpenCode implementers share [one hub and one lazy OpenCode server](architecture.md#one-hub-multiple-implementer-harnesses).
 
 ## Monitor work in a browser
 
@@ -77,10 +102,11 @@ implementers. `inTandem serve` prints the dashboard link when it starts. The das
 implementer's current activity, why `wait` would return, recent messages, results, changed
 files, spend, and a journal timeline.
 
-Permission requests and questions include controls to allow, deny, or answer them. This lets a
-person resolve a request without opening a terminal. **Open in OpenCode** opens OpenCode's web
-interface on the same server. The access token is stored in the link's `#fragment`, which
-browsers do not send to the server.
+Permission requests and questions include controls to allow, deny, or answer them—along with diff
+or command previews for both OpenCode and Claude Code—so a person can resolve a request without
+opening a terminal. For OpenCode tasks, **Open in OpenCode** opens OpenCode's web interface on
+the same server. The access token is stored in the link's `#fragment`, which browsers do not send
+to the server.
 
 ## Use the command line
 
@@ -107,6 +133,7 @@ To run a task without MCP, from a script or a shell-based planner:
 
 ```bash
 inTandem serve ~/work/my-task -m openrouter/qwen/qwen3-coder -p instruction.md
+inTandem serve ~/work/my-task --harness claude -m claude-sonnet-4-6 -p instruction.md
 ```
 
 In another shell:
@@ -124,9 +151,10 @@ inTandem finish
 The CLI verbs map directly to MCP tools: `spec` maps to `submit_spec`, `directive` to
 `send_directive`, and `allow`/`deny` to `reply_permission`.
 
-`inTandem attach` opens OpenCode's TUI for the live session. `inTandem attach --web` prints a
-URL and login for OpenCode's web interface. Use `say` or `directive` to steer the work; prompts
-entered directly in OpenCode do not appear in the inTandem journal.
+For OpenCode tasks, `inTandem attach` opens OpenCode's TUI for the live session (working with
+both 1.x and 2.x passwords) and `inTandem attach --web` prints the web UI URL and login. Use
+`say` or `directive` to steer the work; prompts entered directly in OpenCode do not appear in the
+inTandem journal.
 
 When one supervisor is running, the CLI finds it without flags. When several are running, pass
 `--task` with a name prefix, task directory, or state directory.
@@ -181,22 +209,29 @@ Every `inTandem serve` option can also be set with an environment variable using
 
 | variable | default | |
 |---|---|---|
-| `INTANDEM_MODEL` | OpenCode's default | `provider/model` for the implementer |
+| `INTANDEM_HARNESS` | `opencode` | implementer harness: `opencode` or `claude` |
+| `INTANDEM_MODEL` | harness default | `provider/model` for OpenCode; bare or `anthropic/<model>` for Claude |
 | `INTANDEM_PROTECTED` | `[]` | JSON list of globs, e.g. `'["instruction.md","docs/*.md"]'` |
 | `INTANDEM_NOTIFY_CMD`, `INTANDEM_NTFY_TOPIC` | off | alert delivery |
 | `INTANDEM_STALL_AFTER` | `720` | seconds of text without a tool call |
 | `INTANDEM_QUIET_AFTER` | `300` | seconds with neither |
 | `INTANDEM_STATE_ROOT` | `$XDG_STATE_HOME/intandem` | where task state lives |
-| `INTANDEM_OPENCODE_BIN` | `opencode` | the OpenCode binary |
+| `INTANDEM_OPENCODE_BIN` | `opencode` | the OpenCode binary (custom names are never auto-installed) |
+| `INTANDEM_CLAUDE_BIN` | `claude` | the Claude Code CLI binary for `harness="claude"` |
 | `INTANDEM_NO_INSTALL` | unset | set to stop inTandem installing OpenCode when none is found |
 | `INTANDEM_WORKDIR` | the MCP server's working directory | the project `inTandem mcp` acts on by default |
 
 ## Limitations
 
-- OpenCode 1.x and 2.x are supported; 2.x was tested against 2.3.2. A 2.x question is a form, and
-  only its option fields are offered as questions.
+- **OpenCode 1.x and 2.x** are supported (2.x tested against `2.3.2`). A 2.x question is a form,
+  and its fields are mapped into inTandem's question interface.
+- **Claude Code sessions** do not survive a supervisor restart: if the supervisor restarts mid-spec,
+  it notices the old session is gone and redelivers the spec to a fresh CLI session.
+- **Shell writes to protected files** bypass tool-level edit guards in both OpenCode and Claude
+  Code; the supervisor's content-hash check catches them and aborts the turn.
 - A task has one active specification at a time. Run parallel work in separate worktrees.
-- `list_models` reports what OpenCode lists, not necessarily what the connected account can use.
-  For example, a ChatGPT login may reject some OpenAI models; `wait` reports that as `error`.
+- `list_models` for OpenCode reports what OpenCode lists, not necessarily what the connected
+  account can use. For example, a ChatGPT login may reject some OpenAI models; `wait` reports
+  that as `error`.
 - `wait` reasons are inferred from the event stream. Their thresholds are configurable, and
   `inTandem status` displays the values used for each call.

@@ -527,6 +527,10 @@ def git(cwd: Path, *args: str) -> None:
     subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True)
 
 
+def _write_text(path: Path, text: str) -> None:
+    path.write_text(text)
+
+
 async def test_diff_is_git_since_the_session_started(
     make_backend: Callable[..., ClaudeCodeBackend], task_dir: Path
 ) -> None:
@@ -667,6 +671,112 @@ async def test_hub_does_not_start_opencode_for_claude_only_use(tmp_path: Path) -
     try:
         assert not called
         assert hub.opencode is None
+    finally:
+        await hub.close()
+
+
+async def test_full_stack_hub_bridge_and_supervisor_with_claude_backend(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import json
+
+    import httpx
+
+    from intandem.hub import Hub
+
+    work = (tmp_path / "repo").resolve()
+    work.mkdir()
+    (work / "instruction.md").write_text("Do not touch.\n")
+    git(work, "init", "-q")
+    git(work, "add", ".")
+    git(work, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "init")
+
+    built_clients: list[FakeSDKClient] = []
+
+    def fake_factory(options: ClaudeAgentOptions) -> FakeSDKClient:
+        client = FakeSDKClient(options)
+        built_clients.append(client)
+        return client
+
+    real_init = ClaudeCodeBackend.__init__
+
+    def patched_init(self: ClaudeCodeBackend, cwd: Path, **kwargs: Any) -> None:
+        kwargs["client_factory"] = fake_factory
+        real_init(self, cwd, **kwargs)
+
+    monkeypatch.setattr(ClaudeCodeBackend, "__init__", patched_init)
+
+    def no_opencode() -> Any:
+        raise AssertionError("OpenCode must not start for a claude task")
+
+    hub = Hub(tmp_path / "state", no_opencode)
+    await hub.start()
+    try:
+        manifest = await hub.start_task(
+            work,
+            harness="claude",
+            claude_bin=sys.executable,
+            model="claude-sonnet-4-5",
+            protect=["instruction.md"],
+            poll_interval=0.05,
+        )
+        assert manifest.opencode_port is None
+        headers = {"Authorization": f"Bearer {manifest.token.get_secret_value()}"}
+        async with httpx.AsyncClient(base_url=manifest.url, headers=headers, timeout=10) as http:
+            assert (await http.get("/opencode")).json()["url"] is None
+            spec = await http.post("/spec", json={"spec_id": "S-1", "text": "Write hello.txt."})
+            assert spec.status_code == 200
+            result_path = Path(spec.json()["result_path"])
+
+            await eventually(lambda: bool(built_clients) and bool(built_clients[0].queries))
+            sdk = built_clients[0]
+            assert sdk.options.model == "claude-sonnet-4-5"
+
+            # 1. Protected edit hits PreToolUse hook -> wait returns blocked -> dashboard sees diff.
+            blocked_hook = asyncio.create_task(
+                sdk.pre_tool_use(
+                    "Edit",
+                    {
+                        "file_path": str(work / "instruction.md"),
+                        "old_string": "Do not touch.",
+                        "new_string": "Touched.",
+                    },
+                )
+            )
+            waited = (await http.get("/wait", params={"timeout": 5})).json()
+            assert waited["reason"] == "blocked"
+            [perm] = (await http.get("/pending")).json()["permissions"]
+            assert perm["patterns"] == ["instruction.md"]
+            assert perm["metadata"]["diff"] == "-Do not touch.\n+Touched."
+
+            reply = await http.post(
+                "/permission",
+                json={"id": perm["id"], "reply": "reject", "message": "Leave it alone."},
+            )
+            assert reply.status_code == 200
+            assert (await blocked_hook)["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+            # 2. Implementer writes hello.txt and result file, then ends turn.
+            _write_text(work / "hello.txt", "hi\n")
+            _write_text(
+                result_path,
+                json.dumps({"spec_id": "S-1", "verdict": "done", "summary": "wrote hello.txt"}),
+            )
+            usage = {"input_tokens": 50, "output_tokens": 10}
+            await sdk.inbox.put(assistant(TextBlock(text="Done."), usage=usage))
+            await sdk.inbox.put(result(total_cost_usd=0.12, usage=usage))
+
+            done = (await http.get("/wait", params={"timeout": 5})).json()
+            assert done["reason"] == "result"
+            assert done["detail"] == "done"
+
+            diff = (await http.get("/diff")).json()["files"]
+            assert [f["file"] for f in diff] == ["hello.txt"]
+            cost = (await http.get("/cost")).json()
+            assert cost["total_cost"] == pytest.approx(0.12)
+            assert cost["total_tokens"]["input"] == 50
+
+            assert (await http.post("/finish")).status_code == 200
     finally:
         await hub.close()
 
