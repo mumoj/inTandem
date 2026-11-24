@@ -1,12 +1,11 @@
-"""``ImplementerBackend``: everything the supervisor needs from a harness.
+"""Protocol defining the backend interface required by the supervisor.
 
-The supervisor depends on this protocol, never on a harness's transport. Tests
-swap in an in-memory fake, and each harness (OpenCode 1, OpenCode 2, Claude
-Code, Codex) is one adapter that satisfies it.
+The supervisor interacts only with ``ImplementerBackend``, decoupling it from
+individual harness transports and allowing tests to use an in-memory fake.
 
-The shape is pull: pending permissions and questions are listed on request.
-A harness that pushes requests at its client keeps them in a pending map and
-serves them from these methods.
+Pending permissions and questions use a pull model: backends that receive
+push-style prompts store them locally and expose them via ``permissions()`` and
+``questions()``.
 """
 
 from __future__ import annotations
@@ -37,10 +36,10 @@ class ImplementerBackend(Protocol):
     async def get_session(self, session_id: str) -> Session: ...
 
     async def guard_subagent(self, session_id: str, guard: Guard, inherited: object = None) -> None:
-        """Forbid a subagent's session to edit ``guard.protected``, outright.
+        """Deny edits to ``guard.protected`` in a subagent session.
 
-        ``inherited`` is the subagent's own policy as the backend reported it,
-        opaque to inTandem. ``None`` means the backend should look it up.
+        ``inherited`` is the opaque policy reported for the subagent, or
+        ``None`` if the backend should fetch it first.
         """
         ...
 
@@ -69,5 +68,5 @@ class ImplementerBackend(Protocol):
     async def diff(self, session_id: str) -> list[FileDiff]: ...
 
     def events(self) -> AsyncIterator[BackendEvent]:
-        """One connection to the event stream. Returns when the backend closes it."""
+        """Yield events from a single stream connection until the backend closes it."""
         ...

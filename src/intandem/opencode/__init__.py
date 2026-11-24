@@ -1,4 +1,4 @@
-"""Everything that talks to OpenCode: models, client, event stream, shared host."""
+"""OpenCode 1.x client, models, event stream parsing, and shared host management."""
 
 from intandem.opencode.client import NotFoundError, OpenCodeAPI, OpenCodeClient, OpenCodeError
 from intandem.opencode.events import Event, StreamRecorder

@@ -1,12 +1,8 @@
-"""Which ACP tool calls a ``Guard`` stops, and what the planner is shown about them.
+"""Inspects ACP tool calls for protected-file edits and builds dashboard previews.
 
-An ACP ``toolCall`` says what it touches in several places, depending on the
-tool: ``locations[*].path``, its ``rawInput`` (``TargetFile``, ``path``, ...)
-and agy's own ``args``. Every one of them counts, and matching errs wide the
-same way as ``claude/guard.py``: a path is protected when its task-relative
-form matches a pattern under ``fnmatchcase``, or does with ``**/`` collapsed,
-or when the pattern's ``root.glob`` finds it. An edit wrongly stopped costs
-the planner one reply; an edit wrongly let through costs a protected file.
+File paths are collected from ``locations[*].path``, ``rawInput``, ``args``, and
+inline diff content, then matched against ``Guard.protected`` using the same
+permissive glob/fnmatch logic as ``claude/guard.py``.
 """
 
 from __future__ import annotations
@@ -29,10 +25,10 @@ EDIT_TOOLS = frozenset(
         "MultiEdit",
     }
 )
-"""Tool names that write files, whatever ``kind`` the agent gave the call."""
+"""Tool names treated as file edits regardless of the ACP ``kind`` field."""
 
 SHELL_TOOLS = frozenset({"run_command", "run_shell_command", "Bash", "shell", "execute"})
-"""Tool names that run a shell command."""
+"""Tool names treated as shell command execution."""
 
 PATH_KEYS = ("Path", "TargetFile", "AbsolutePath", "path", "file_path", "filePath")
 COMMAND_KEYS = ("CommandLine", "command", "Command", "cmd")
@@ -40,7 +36,7 @@ _PREVIEW_LINES = 120
 
 
 def tool_name(call: object) -> str:
-    """The tool's name, or failing that its title or kind."""
+    """Extract a display name for an ACP tool call, falling back to title or kind."""
     return dig_str(call, "name") or dig_str(call, "title") or dig_str(call, "kind") or "tool"
 
 
@@ -53,7 +49,7 @@ def is_shell(call: object) -> bool:
 
 
 def edit_paths(call: object) -> list[str]:
-    """Every file an editing call says it writes, as the agent gave them, once each."""
+    """Return deduplicated file paths targeted by an editing tool call."""
     if not is_edit(call):
         return []
     found: list[str] = []
@@ -77,11 +73,11 @@ def _relative(path: str, root: Path) -> str | None:
     try:
         return target.resolve().relative_to(root.resolve()).as_posix()
     except ValueError:
-        return None  # Outside the task: not ours to protect.
+        return None  # Path is outside the task directory.
 
 
 def protected_paths(call: object, root: Path, patterns: tuple[str, ...]) -> list[str]:
-    """The task-relative paths this call would edit that ``patterns`` protect."""
+    """Return task-relative paths edited by ``call`` that match ``patterns``."""
     if not patterns:
         return []
     hits: list[str] = []
@@ -93,7 +89,7 @@ def protected_paths(call: object, root: Path, patterns: tuple[str, ...]) -> list
 
 
 def command(call: object) -> str | None:
-    """The shell command a call runs, if it is a shell tool."""
+    """Extract the shell command string if ``call`` is a shell tool invocation."""
     if not is_shell(call):
         return None
     for container in ("rawInput", "args"):
@@ -104,7 +100,7 @@ def command(call: object) -> str | None:
 
 
 def preview_metadata(call: object) -> dict[str, str]:
-    """``command`` or ``diff`` for the dashboard's permission card."""
+    """Extract a ``command`` or ``diff`` preview for the dashboard permission card."""
     if shell := command(call):
         return {"command": shell}
     diff = edit_preview(call)
@@ -112,7 +108,7 @@ def preview_metadata(call: object) -> dict[str, str]:
 
 
 def edit_preview(call: object) -> str:
-    """A unified diff of what an editing call would write, bounded."""
+    """Build a truncated unified diff preview for an editing tool call."""
     if not is_edit(call):
         return ""
     chunks: list[str] = []
@@ -132,7 +128,7 @@ def edit_preview(call: object) -> str:
 
 
 def _input_chunks(call: object) -> list[str]:
-    """Diffs rebuilt from the tool's input, when it sent no ``diff`` content."""
+    """Synthesize unified diffs from tool input fields when no diff content block is present."""
     paths = edit_paths(call)
     path = paths[0] if paths else ""
     for container in ("rawInput", "args"):
@@ -165,7 +161,7 @@ def _replacement(chunk: object, path: str) -> str:
 
 
 def unified(old: str, new: str, path: str = "") -> str:
-    """``old`` to ``new`` as a unified diff, headed by ``path`` when there is one."""
+    """Format a unified diff from ``old`` to ``new``."""
     name = path or "file"
     diff = difflib.unified_diff(
         old.splitlines(),

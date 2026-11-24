@@ -1,13 +1,11 @@
-"""One git worktree per implementer, so several can work on one repository at once.
+"""Git worktree management for running parallel implementers on one repository.
 
-Each implementer gets a branch ``intandem/<name>`` checked out in its own directory
-under the state root, outside the repository, so the planner's working tree and
-``git status`` stay clean. Git's own worktree list is the registry: nothing here
-keeps state that could disagree with it.
+Each implementer gets its own branch ``intandem/<name>`` checked out under the
+state root so the main working tree stays untouched. Git's worktree list is
+used as the source of truth rather than maintaining a separate registry.
 
-The implementer edits files but does not commit. Landing commits whatever it
-left, then merges that branch into the repository's current branch, or throws
-it away.
+Implementers edit files without committing; landing commits their remaining
+changes and either merges the branch into the current branch or removes it.
 """
 
 from __future__ import annotations
@@ -22,19 +20,18 @@ from pathlib import Path
 BRANCH_PREFIX = "intandem/"
 NAME = re.compile(r"^[a-z0-9][a-z0-9-]{0,39}$")
 
-# What an implementer leaves behind by running its own checks. Never its work,
-# so never committed, whether or not the repository ignores it.
+# Build/test caches that should never be committed when landing, even if unignored.
 GENERATED = ("__pycache__", ".pytest_cache", ".ruff_cache", ".mypy_cache", "*.pyc")
 _LANDED = (
     ".",
     *(f":(exclude,glob)**/{pattern}" for pattern in GENERATED),
     *(f":(exclude,glob)**/{pattern}/**" for pattern in GENERATED if "*" not in pattern),
 )
-"""A pathspec for the implementer's work: everything but ``GENERATED``."""
+"""Git pathspec matching all implementer changes except ``GENERATED``."""
 
 
 class GitError(Exception):
-    """A git command failed; the message carries git's own explanation."""
+    """Raised when a git subprocess fails."""
 
 
 def git(repo: Path, *args: str, check: bool = True) -> str:
@@ -48,7 +45,7 @@ def git(repo: Path, *args: str, check: bool = True) -> str:
 
 
 def repo_root(path: Path) -> Path:
-    """The main working tree of the repository ``path`` belongs to."""
+    """Return the main working tree directory for the git repository containing ``path``."""
     try:
         common = git(path, "rev-parse", "--path-format=absolute", "--git-common-dir").strip()
     except GitError as exc:
@@ -81,7 +78,7 @@ def worktree_home(state_root: Path, repo: Path) -> Path:
 
 
 def list_worktrees(repo: Path) -> list[Worktree]:
-    """The implementer worktrees of ``repo``, from git's own list."""
+    """List inTandem implementer worktrees registered in ``repo``."""
     found: list[Worktree] = []
     path: Path | None = None
     for line in git(repo, "worktree", "list", "--porcelain").splitlines():
@@ -102,7 +99,7 @@ def find_worktree(repo: Path, name: str) -> Worktree:
 
 
 def create_worktree(repo: Path, state_root: Path, name: str, base: str | None) -> Worktree:
-    """A new branch and worktree for ``name``, or the existing one: retrying is safe."""
+    """Create a branch and worktree for ``name``, or return the existing one."""
     check_name(name)
     for worktree in list_worktrees(repo):
         if worktree.name == name:
@@ -119,7 +116,7 @@ def create_worktree(repo: Path, state_root: Path, name: str, base: str | None) -
 
 
 def commit_all(worktree: Worktree, message: str) -> bool:
-    """Commit everything the implementer left in its worktree. False if there was nothing."""
+    """Commit all uncommitted changes in ``worktree``. Returns ``False`` if clean."""
     git(worktree.path, "add", "-A", "--", *_LANDED)
     if not git(worktree.path, "diff", "--cached", "--name-only").strip():
         return False
@@ -138,11 +135,10 @@ def commit_all(worktree: Worktree, message: str) -> bool:
 
 
 def review(repo: Path, worktree: Worktree, max_chars: int) -> dict[str, object]:
-    """What landing would merge: committed and uncommitted changes against the fork point."""
+    """Return diff stats and a truncated patch of all changes since the branch fork point."""
     head = git(repo, "rev-parse", "HEAD").strip()
     base = git(repo, "merge-base", head, worktree.branch).strip()
-    # Untracked files only show in a diff once git knows about them; intent-to-add
-    # records that without staging their content.
+    # Mark untracked files with intent-to-add so git diff includes them without staging content.
     git(worktree.path, "add", "--intent-to-add", "--all", "--", *_LANDED)
     stat = git(worktree.path, "diff", "--stat", base, "--", *_LANDED).strip()
     diff = git(worktree.path, "diff", base, "--", *_LANDED)
@@ -159,7 +155,7 @@ def review(repo: Path, worktree: Worktree, max_chars: int) -> dict[str, object]:
 
 
 def merge(repo: Path, worktree: Worktree, message: str) -> str:
-    """Merge the implementer's branch into ``repo``'s current branch, or leave no trace."""
+    """Merge ``worktree.branch`` into ``repo``'s current branch, aborting cleanly on conflict."""
     current = git(repo, "branch", "--show-current").strip()
     if not current:
         raise GitError(f"{repo} is on a detached HEAD; check out the branch to merge into")
@@ -178,7 +174,7 @@ def merge(repo: Path, worktree: Worktree, message: str) -> str:
 
 
 def remove(repo: Path, worktree: Worktree) -> None:
-    """Delete the worktree and its branch. Only after merging, or to discard the work."""
+    """Remove the worktree directory and delete its branch."""
     git(repo, "worktree", "remove", "--force", str(worktree.path))
     git(repo, "branch", "-D", worktree.branch)
 
@@ -205,7 +201,7 @@ def worktree_for_dir(path: Path) -> tuple[Path, Worktree] | None:
 
 
 def target_branch(repo: Path) -> str | None:
-    """The current branch checked out in ``repo``, or ``None`` if detached."""
+    """Return the checked-out branch in ``repo``, or ``None`` if HEAD is detached."""
     return git(repo, "branch", "--show-current", check=False).strip() or None
 
 
@@ -220,7 +216,7 @@ def merge_base(repo: Path, worktree: Worktree) -> tuple[str | None, bool]:
 
 
 def archive_state(state_root: Path, task_dir: Path) -> Path | None:
-    """Move a finished implementer's state aside under ``landed/``, keeping it as evidence."""
+    """Move a finished implementer's state directory under ``landed/``."""
     from intandem.config import TaskPaths
 
     root = TaskPaths.for_task(state_root, task_dir).root

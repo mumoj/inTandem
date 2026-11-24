@@ -62,7 +62,7 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/intandem"]
 
-# Only what a source build needs: stray files in the checkout must never ship.
+# Include only source and metadata files in sdists to avoid packaging stray local files.
 [tool.hatch.build.targets.sdist]
 only-include = ["src", "LICENSE", "README.md", "pyproject.toml"]
 
@@ -96,7 +96,7 @@ pythonVersion = "3.12"
 typeCheckingMode = "strict"
 venvPath = "."
 venv = ".venv"
-# Tests poke at private state on purpose and lean on fixtures pyright cannot see through.
+# Relax strict checks in tests where private attributes and dynamic fixtures are used.
 executionEnvironments = [
     { root = "tests", extraPaths = [".", "src"], reportPrivateUsage = false, reportUnknownMemberType = false, reportUnknownArgumentType = false, reportUnknownVariableType = false, reportMissingParameterType = false, reportUnknownParameterType = false, reportUnknownLambdaType = false },
     { root = "src" },

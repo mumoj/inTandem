@@ -1,9 +1,8 @@
-"""What a backend must stop the implementer from doing, in inTandem's own terms.
+"""Harness-independent file protection configuration.
 
-Each harness enforces a ``Guard`` its own way: OpenCode as an ordered
-permission ruleset, another harness as a hook or an approval policy. None of
-that syntax belongs here. Whatever the backend manages, the supervisor's
-content hash still catches an edit that gets past it.
+Each backend enforces a ``Guard`` using its own mechanism (permission rulesets,
+hooks, or approval callbacks). As a fallback, the supervisor also hashes
+protected files to detect edits that bypass backend controls.
 """
 
 from __future__ import annotations
@@ -14,7 +13,7 @@ from dataclasses import dataclass
 @dataclass(frozen=True, slots=True)
 class Guard:
     protected: tuple[str, ...] = ()
-    """Globs, relative to the task directory, that must not be edited unasked."""
+    """Glob patterns relative to the task directory that require approval before editing."""
 
     unattended: bool = True
-    """Run without stopping for routine approvals, so only protected edits wait."""
+    """Auto-approve routine operations so only protected file edits pause for review."""

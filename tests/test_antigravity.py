@@ -1,11 +1,9 @@
-"""The Antigravity backend, against an in-memory stand-in for ``agy acp``.
+"""Unit tests for ``AntigravityBackend`` using an in-memory ``ACPTransport`` fake.
 
-``FakeAgent`` is an ``ACPTransport`` that answers requests the way agy 1.5.14
-does, and lets each test push the ``session/update`` notifications and
-``session/request_permission`` requests the real agent would send. A few tests
-run ``StdioACPTransport`` against a small Python script speaking ACP on
-stdio, so the wire itself is covered too. ``test_antigravity_e2e.py`` covers
-the real CLI.
+``FakeAgent`` emulates ``agy`` 1.5.14 ACP responses and lets tests inject
+``session/update`` notifications and ``session/request_permission`` requests.
+A subset of tests also exercises ``StdioACPTransport`` over a real stdio
+subprocess running a small mock Python script.
 """
 
 from __future__ import annotations
@@ -56,7 +54,7 @@ USAGE = {
 
 
 class FakeAgent:
-    """``agy acp`` without the process: it answers requests the way agy does."""
+    """In-memory ``ACPTransport`` emulating ``agy acp`` requests and notifications."""
 
     def __init__(self, cli: str, cwd: Path) -> None:
         self.cli = cli

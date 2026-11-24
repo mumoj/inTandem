@@ -1,8 +1,4 @@
-"""OpenCode 1.x bus events as ``BackendEvent``.
-
-Every read of an OpenCode event payload by key lives here, so the rest of
-inTandem never learns where OpenCode keeps a session id or a tool's status.
-"""
+"""Translates OpenCode 1.x bus events into normalized ``BackendEvent`` objects."""
 
 from __future__ import annotations
 
@@ -16,7 +12,7 @@ _TOOL_DETAIL_LIMIT = 240
 
 
 def from_opencode(event: Event) -> BackendEvent:
-    """``event`` in neutral terms. An unknown type becomes ``OTHER``, never an error."""
+    """Convert an OpenCode 1.x event into a ``BackendEvent`` (unknown types become ``OTHER``)."""
     kind = _TYPES.get(event.type, EventType.OTHER)
     props = event.properties
     out = BackendEvent(
@@ -80,7 +76,7 @@ def _part(part: object) -> PartUpdate | None:
 
 
 def _tool_detail(part: object) -> str:
-    """A bounded summary of a tool call, for stall diagnosis."""
+    """Format a length-bounded one-line summary of a tool call for stall reporting."""
     tool = dig_str(part, "tool") or "tool"
     status = dig_str(part, "state", "status") or "unknown"
     command = dig_str(part, "state", "input", "command")

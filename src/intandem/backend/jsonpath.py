@@ -1,9 +1,4 @@
-"""Typed reads from untyped JSON.
-
-Event and wire payloads stay plain dicts at adapter boundaries, so reading one
-means walking nested keys and checking types at every step. These helpers do
-that once, so call sites read as ``dig(part, "state", "status")``.
-"""
+"""Helpers for safely extracting typed values from nested JSON dictionaries."""
 
 from __future__ import annotations
 
@@ -11,7 +6,7 @@ from typing import cast
 
 
 def dig(data: object, *keys: str) -> object:
-    """Follow ``keys`` through nested dicts; ``None`` if any step is missing."""
+    """Traverse nested dicts along ``keys``, returning ``None`` if any key is missing."""
     for key in keys:
         if not isinstance(data, dict):
             return None

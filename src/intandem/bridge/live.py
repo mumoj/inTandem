@@ -1,18 +1,16 @@
-"""The dashboard's live feed: one long-lived response that pushes what changed.
+"""Server-sent event feed backing the live dashboard.
 
-Polling made the page lag by up to one poll interval and refetch the whole
-transcript whether or not it had moved. Here the supervisor's revision
-counters say when something changed, and the feed sends only the parts that
-did, as server-sent events:
+Uses the supervisor's revision counters to push only the sections that changed:
 
-``overview``  the same body as ``GET /overview``, whenever it differs
-``journal``   new entries, as ``GET /journal?after=``
-``messages``  the last messages, as ``GET /messages``, when the transcript moved
-``diff``      as ``GET /diff``, when a file may have changed
-``cost``      as ``GET /cost``, after the transcript moved
+``overview``  same payload as ``GET /overview`` whenever it changes
+``journal``   newly appended entries (as in ``GET /journal?after=``)
+``messages``  recent messages when ``message_revision`` advances
+``diff``      changed files when ``file_revision`` advances
+``cost``      session totals when ``message_revision`` advances
 
-Bursts are coalesced into frames, and the costlier parts are rate limited, so
-a model streaming tokens costs at most one transcript read a second.
+Rapid bursts are coalesced over ``FRAME`` seconds, and heavier fetches
+(messages, diff, cost) are rate-limited to avoid redundant backend calls during
+token streaming.
 """
 
 from __future__ import annotations
@@ -30,9 +28,9 @@ from intandem.bridge.schemas import DiffOut, JournalOut, MessageOut, MessagesOut
 from intandem.supervisor.supervisor import Supervisor, SupervisorError
 
 FRAME = 0.1
-"""Gather a burst of changes for this long before sending them."""
+"""Coalescing window (seconds) for batching rapid state updates."""
 PING = 15.0
-"""Send a comment this often when nothing changes, so proxies keep the line open."""
+"""Keepalive comment interval (seconds) while the stream is idle."""
 MESSAGES_EVERY = 1.0
 DIFF_EVERY = 2.0
 COST_EVERY = 5.0
@@ -51,13 +49,13 @@ async def overview(supervisor: Supervisor) -> OverviewOut:
 
 
 def frame(event: str, body: str) -> str:
-    # Pydantic's JSON holds no raw newlines, so one ``data`` line is enough.
+    # Pydantic's JSON serializer escapes newlines, so a single data line is safe.
     return f"event: {event}\ndata: {body}\n\n"
 
 
 @dataclass
 class _Part:
-    """One rate-limited part of the feed, refetched when its revision moves."""
+    """Rate-limited feed section that refetches when its revision counter changes."""
 
     every: float
     fetch: Callable[[], Awaitable[BaseModel | None]]
@@ -66,7 +64,7 @@ class _Part:
     last: str = ""
 
     def due_in(self, revision: int, now: float) -> float | None:
-        """Seconds until this part should be sent, or ``None`` if it is current."""
+        """Return seconds until the next allowed fetch, or ``None`` if already up to date."""
         if revision == self.seen:
             return None
         return max(0.0, self.sent_at + self.every - now)
@@ -96,7 +94,7 @@ class LiveFeed:
         }
 
     def due_in(self) -> float:
-        """How long the feed may sleep before a rate-limited part falls due."""
+        """Return the shortest wait (up to ``PING``) before any rate-limited section is due."""
         now = time.monotonic()
         revisions = self._revisions()
         waits = [
@@ -107,7 +105,7 @@ class LiveFeed:
         return min([PING, *waits])
 
     async def collect(self) -> list[str]:
-        """Frames for everything that changed since the last call."""
+        """Build SSE frames for all sections that changed since the previous call."""
         sup = self.supervisor
         frames: list[str] = []
         current = await overview(sup)
@@ -115,7 +113,7 @@ class LiveFeed:
         if body != self._overview:
             self._overview = body
             frames.append(frame("overview", body))
-        # A new spec or session: everything about the last one is stale.
+        # Reset cached section state when the active spec or session changes.
         spec = (current.status.spec_id, current.status.session_id)
         if spec != self._spec:
             self._spec = spec
@@ -137,7 +135,7 @@ class LiveFeed:
             try:
                 model = await part.fetch()
             except (BackendError, SupervisorError):
-                continue  # No spec yet, or the harness hiccupped: try on the next change.
+                continue  # Skip transient backend errors or missing spec; retry on next change.
             if model is None:
                 continue
             body = model.model_dump_json()

@@ -1,71 +1,58 @@
 # inTandem
 
-**A harness for pairing coding agents: one model plans, another implements, and the planner reviews the result.**
+inTandem is an MCP server and CLI for pairing coding agents: one agent (such as Claude Code or Codex) writes specifications and reviews results, while another (running on [OpenCode](https://opencode.ai) or Claude Code) writes the code.
 
-Your planner (Claude Code or Codex) writes a specification. inTandem sends it to an implementer
-running on [OpenCode](https://opencode.ai) or Claude Code and supervises the session. If the
-implementer requests permission, stalls while reasoning, or hangs on a tool call, inTandem reports
-that to the planner. You can respond from the dashboard or command line, including over SSH from a
-phone. When the implementer finishes, inTandem returns its result and changed files to the planner
-for verification and, if appropriate, merging.
-
-inTandem runs as an MCP server alongside those tools; it does not replace them.
+When the planner submits a specification, inTandem starts or reuses a supervised implementer session and monitors it. If the implementer asks for permission, asks a question, stalls while reasoning without calling tools, or stops responding, inTandem surfaces that to the planner and to a local web dashboard. You can also approve, deny, or inspect sessions from the command line (including over SSH). Once the implementer finishes, inTandem returns its result and changed files to the planner for verification and optional merging.
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/mumoj/inTandem/main/docs/overview.svg" width="900"
-       alt="A planner sends a specification to inTandem, which prompts an implementer on OpenCode or Claude Code. The implementer edits the repository and inTandem returns its result to the planner for verification. Requests can be approved or denied from a dashboard or phone.">
+       alt="Overview diagram: the planner sends a specification to inTandem, which drives an implementer on OpenCode or Claude Code. inTandem returns results and diffs to the planner for review, and exposes controls via a web dashboard or CLI.">
 </p>
 
-## Why use it
+## What it does
 
-- **Separate planning from implementation.** Use Claude Code or Codex to define and review the task, then delegate implementation to OpenCode (1.x or 2.x) or Claude Code.
-- **Review the work, not only the summary.** A result must belong to the active specification and be written after its latest prompt. The planner can inspect the resulting diff.
-- **Put guardrails around sensitive files.** Configure file globs that implementers may not change. inTandem blocks edits through permissions and detects changes that bypass them.
-- **Know when a task needs attention.** It reports permission requests, stalled reasoning, and unresponsive tools to the planner and the dashboard.
-- **Split independent work safely.** Each parallel implementer receives its own Git branch and worktree, keeping its changes separate until review.
+- Runs alongside Claude Code or Codex as an MCP server, letting the planning model delegate implementation to OpenCode (1.x or 2.x) or Claude Code.
+- Tracks each specification in its own session and only accepts result files matching the active spec ID that were written after the latest prompt, alongside the git diff for verification.
+- Protects configured file globs from edits using backend permission rules and periodic content-hash checks in case an edit bypasses tool permissions.
+- Detects and reports permission requests, questions, reasoning stalls, and unresponsive tool calls to both the planner and the dashboard.
+- Supports running multiple implementers in parallel by giving each one its own Git branch and worktree until its changes are reviewed and merged or discarded.
 
-## Install
+## Installation
 
-inTandem runs on Linux, macOS and WSL. Native Windows isn't supported yet, so on Windows, install it inside [WSL](https://learn.microsoft.com/windows/wsl/install).
-
-You need Python 3.12 to 3.14 and [uv](https://docs.astral.sh/uv/).
+inTandem runs on Linux, macOS, and WSL (native Windows is not supported yet; on Windows, install inside [WSL](https://learn.microsoft.com/windows/wsl/install)). It requires Python 3.12–3.14 and [uv](https://docs.astral.sh/uv/).
 
 ```bash
-uv tool install intandem        # puts `inTandem` on your PATH (installs OpenCode if needed)
-opencode auth login             # connect a model provider
+uv tool install intandem        # installs `inTandem` (and downloads OpenCode if missing)
+opencode auth login             # authenticate with a model provider
 ```
 
-To run implementers on Claude Code instead:
+To use Claude Code as the implementer instead of OpenCode:
 
 ```bash
 uv tool install 'intandem[claude]'
 claude auth login
 ```
 
-## Connect a planner
+## Connecting a planner
 
-Register inTandem as an MCP server:
+Register inTandem as an MCP server with your planner:
 
 ```bash
 claude mcp add inTandem --scope user -- inTandem mcp      # Claude Code
 codex mcp add inTandem -- inTandem mcp                    # Codex
 ```
 
-The server starts when the planner connects and stops when it exits. There is no separate daemon
-to start.
+The MCP server starts on demand when the planner connects and shuts down when it exits, so you do not need to run a background daemon.
 
-## Run your first task
+## Running a task
 
-Ask the planner to delegate a task:
+Ask your planner to delegate work through inTandem, for example:
 
 > Have an implementation model write the tests for citations.py through inTandem.
 
-The planner writes a specification, submits it, waits for the work to finish, and reviews the
-result. Its first response includes a **dashboard link** for monitoring progress and approving
-or denying requests.
+The planner writes a specification, submits it, waits for the implementer to finish, and reviews the resulting files. Its first reply includes a local **dashboard link** where you can follow progress and handle permission or question prompts.
 
-To set a default model, harness, or protected files for every task, pass environment variables when
-you register:
+To configure defaults such as the implementer model, harness, or protected file globs across tasks, pass environment variables when registering the MCP server:
 
 ```bash
 claude mcp add inTandem --scope user \
@@ -74,32 +61,31 @@ claude mcp add inTandem --scope user \
   -- inTandem mcp
 ```
 
-Set `-e INTANDEM_HARNESS=claude` to use Claude Code as the default implementer. See the
-[usage guide](https://github.com/mumoj/inTandem/blob/main/docs/usage.md) for all options.
+Use `-e INTANDEM_HARNESS=claude` to make Claude Code the default implementer. See the [usage guide](https://github.com/mumoj/inTandem/blob/main/docs/usage.md) for all configuration options.
 
-## Use the command line
+## Command-line usage
 
-The command line exposes the same controls and can be used over SSH:
+The CLI provides the same inspection and approval commands as the dashboard, which is useful over SSH:
 
 ```bash
-inTandem status      # what it's doing right now
-inTandem pending     # what it's waiting on
+inTandem status      # show current spec and activity
+inTandem pending     # list pending permissions and questions
 inTandem allow       # or: inTandem deny --message "leave that file alone"
-inTandem cost        # what the implementer has spent
+inTandem cost        # show token usage and cost per spec
 ```
 
-## How it works
+## Architecture
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/mumoj/inTandem/main/docs/architecture.svg" width="1000"
-       alt="The planner, terminal and browser all call the bridge inside the inTandem hub. The bridge calls the supervisor, which drives the selected implementer backend (OpenCode or Claude Code). The backend edits your working tree and streams events back to the event pump while the monitor and host watch run alongside.">
+       alt="Architecture diagram: the planner, CLI, and browser talk to the HTTP bridge in the inTandem hub. The bridge calls the supervisor, which drives the selected backend (OpenCode or Claude Code), while background tasks pump events, run periodic checks, and watch backend health.">
 </p>
 
-## Learn more
+## Documentation
 
 | | |
 | --- | --- |
-| [Usage guide](https://github.com/mumoj/inTandem/blob/main/docs/usage.md) | Harnesses, parallel implementers, the CLI, exit codes, alerts and configuration |
-| [How it works](https://github.com/mumoj/inTandem/blob/main/docs/architecture.md) | Architecture, what it enforces and design notes |
-| [Development](https://github.com/mumoj/inTandem/blob/main/docs/development.md) | Running the tests and releasing |
-| [Planner skill](https://github.com/mumoj/inTandem/blob/main/skills/intandem-planner/SKILL.md) | The planner loop as an Agent Skill |
+| [Usage guide](https://github.com/mumoj/inTandem/blob/main/docs/usage.md) | Harnesses, parallel implementers, CLI commands, exit codes, alerts, and configuration |
+| [Architecture](https://github.com/mumoj/inTandem/blob/main/docs/architecture.md) | Component overview, invariants, and design notes |
+| [Development](https://github.com/mumoj/inTandem/blob/main/docs/development.md) | Running tests and cutting releases |
+| [Planner skill](https://github.com/mumoj/inTandem/blob/main/skills/intandem-planner/SKILL.md) | Planner workflow packaged as an Agent Skill |

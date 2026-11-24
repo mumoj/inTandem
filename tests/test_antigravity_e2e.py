@@ -1,8 +1,7 @@
-"""Smoke test: the Antigravity backend driving the real ``agy acp``.
+"""Opt-in end-to-end smoke test for ``AntigravityBackend`` with a real ``agy acp`` CLI.
 
-Opt-in, because it runs on the user's own Antigravity sign-in: set
-``INTANDEM_E2E_ANTIGRAVITY=1`` and have a signed-in ``agy`` on PATH. It is
-skipped otherwise.
+Set ``INTANDEM_E2E_ANTIGRAVITY=1`` with a signed-in ``agy`` on ``PATH`` to run;
+skipped by default.
 """
 
 from __future__ import annotations

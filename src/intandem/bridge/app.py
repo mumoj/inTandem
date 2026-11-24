@@ -1,16 +1,13 @@
-"""The control bridge: a narrow, authenticated HTTP API over the supervisor.
+"""Authenticated loopback HTTP API wrapping a task's supervisor.
 
-The planner and the human on a phone use the same endpoints, through the same
-``inTandem`` client. Anything the planner can do, the human can do too, and every
-call from either lands in the same journal.
+Both the planner and CLI/dashboard users interact through these endpoints, so
+all actions are recorded in the same journal. The bridge does not proxy the
+underlying backend directly; it exposes only explicit control operations.
 
-It binds to loopback and deliberately does not proxy OpenCode. A dozen named
-operations keep the trial's networking private and make every intervention an
-explicit, auditable call.
-
-``/ui`` is the one unauthenticated route: a static page holding no data. It
-reads the token from its URL fragment, which browsers never send to a server,
-and calls the same authenticated endpoints as everyone else.
+``/ui`` and ``/ui/review`` are the only unauthenticated routes. They serve
+static HTML containing no data; the client-side script reads the bearer token
+from the URL fragment (which browsers do not send to the server) and calls the
+authenticated endpoints.
 """
 
 from __future__ import annotations
@@ -82,7 +79,7 @@ def require_token(
 ) -> None:
     expected: str = request.app.state.token
     given = credentials.credentials if credentials else ""
-    # Constant-time comparison: the token is the only thing guarding the bridge.
+    # Use constant-time comparison to avoid timing leaks on the bearer token.
     if not hmac.compare_digest(given.encode(), expected.encode()):
         raise HTTPException(
             status.HTTP_401_UNAUTHORIZED,
@@ -95,10 +92,10 @@ SupervisorDep = Annotated[Supervisor, Depends(get_supervisor)]
 
 
 class BodyLimit:
-    """Refuse oversized bodies before anything parses them.
+    """ASGI middleware that rejects oversized request bodies before parsing.
 
-    Plain ASGI rather than ``BaseHTTPMiddleware``, which wraps every request in
-    an extra task and buffers what passes through it.
+    Implemented as raw ASGI rather than ``BaseHTTPMiddleware`` to avoid extra
+    task wrapping and request buffering.
     """
 
     def __init__(self, app: ASGIApp) -> None:
@@ -145,10 +142,10 @@ async def read_live(
     supervisor: SupervisorDep,
     after: Annotated[int | None, Query(ge=0)] = None,
 ) -> StreamingResponse:
-    """Server-sent events: overview, journal, messages, diff and cost as they change.
+    """Stream server-sent events for overview, journal, messages, diff, and cost updates.
 
-    ``after`` resumes the journal from a ``next`` offset, so a reconnecting page
-    gets only what it missed.
+    Pass ``after`` with a previously returned journal offset to resume without
+    re-reading older entries.
     """
     return StreamingResponse(
         live.stream(supervisor, request.is_disconnected, after),
@@ -158,7 +155,7 @@ async def read_live(
 
 
 @router.get("/journal")
-def read_journal(  # a plain def: FastAPI runs it in its threadpool, off the event loop
+def read_journal(  # Sync handler so FastAPI runs blocking file I/O in its threadpool.
     supervisor: SupervisorDep,
     after: Annotated[int | None, Query(ge=0)] = None,
     limit: Annotated[int, Query(gt=0, le=1000)] = 200,
@@ -169,7 +166,7 @@ def read_journal(  # a plain def: FastAPI runs it in its threadpool, off the eve
 
 @router.get("/opencode")
 async def read_opencode(request: Request) -> OpenCodeOut:
-    """OpenCode's own web UI for this task, for watching the session live."""
+    """Return the OpenCode server URL and credentials for this task, if applicable."""
     login: OpenCodeLogin | None = request.app.state.opencode
     return OpenCodeOut(url=login.url if login else None, password=login.password if login else None)
 
@@ -179,7 +176,7 @@ async def wait(
     supervisor: SupervisorDep,
     seconds: Annotated[float, Query(alias="timeout", gt=0, le=3600)] = 600,
 ) -> WaitOut:
-    """Block until the implementer needs the planner, or ``timeout`` seconds pass."""
+    """Wait until the supervisor needs attention or ``timeout`` seconds elapse."""
     attention = await supervisor.wait(seconds)
     return WaitOut(reason=attention.reason, detail=attention.detail, status=supervisor.status())
 
@@ -190,7 +187,7 @@ async def read_messages(
 ) -> MessagesOut:
     messages = await supervisor.messages(limit)
     record = supervisor.state.current
-    assert record is not None  # messages() already required one
+    assert record is not None  # Guaranteed by supervisor.messages() above.
     return MessagesOut(session_id=record.session_id, messages=[MessageOut.of(m) for m in messages])
 
 
@@ -326,7 +323,7 @@ async def read_cost(supervisor: SupervisorDep) -> CostReport:
 
 @router.post("/spec")
 async def submit_spec(body: SpecIn, supervisor: SupervisorDep) -> SpecOut:
-    """Start a spec in a fresh session. Idempotent for the same id and text."""
+    """Submit a spec in a fresh session (idempotent for matching ID, text, model, and agent)."""
     record = await supervisor.submit_spec(
         body.spec_id, body.text, model=body.model, agent=body.agent
     )
@@ -381,7 +378,7 @@ async def abort(supervisor: SupervisorDep) -> Ok:
 
 @router.post("/finish")
 async def finish(request: Request) -> Ok:
-    """Stop the supervisor. Evidence is captured on the way out."""
+    """Trigger a clean supervisor shutdown."""
     on_finish: Callable[[], None] = request.app.state.on_finish
     on_finish()
     return Ok(detail="stopping")
@@ -394,7 +391,7 @@ class OpenCodeLogin:
 
 
 def dashboard_headers() -> dict[str, str]:
-    """For a page that holds no data and talks only to the server that sent it."""
+    """Security headers for the static dashboard pages."""
     return {
         "Cache-Control": "no-store",
         "Referrer-Policy": "no-referrer",
@@ -441,8 +438,8 @@ def create_app(
     app.state.opencode = opencode
     app.add_middleware(BodyLimit)
     app.add_exception_handler(SupervisorError, _error(status.HTTP_409_CONFLICT))
-    # Starlette walks the exception's MRO, so NotFoundError gets its own status even
-    # though it is also a BackendError.
+    # Starlette resolves handlers by exception MRO, so NotFoundError maps to 404
+    # despite inheriting from BackendError.
     app.add_exception_handler(BackendError, _error(status.HTTP_502_BAD_GATEWAY))
     app.add_exception_handler(NotFoundError, _error(status.HTTP_404_NOT_FOUND))
     app.include_router(router)

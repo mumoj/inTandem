@@ -1,7 +1,7 @@
-"""Find a running bridge and talk to it.
+"""HTTP client for locating and calling a running bridge.
 
-Responses are parsed into the same pydantic models the bridge serves, so the
-client and server cannot drift apart without a validation error saying where.
+Responses are validated against the same Pydantic schemas used by the bridge so
+schema mismatches fail fast.
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ NO_BRIDGE = 3
 
 
 class CliError(Exception):
-    """A failure to report in one line, with the exit code to report it with."""
+    """CLI error carrying a message and process exit code."""
 
     def __init__(self, message: str, exit_code: int = 1) -> None:
         super().__init__(message)
@@ -27,11 +27,11 @@ class CliError(Exception):
 
 
 def find_manifest(state_root: Path, *, task: str | None, manifest: Path | None) -> Path:
-    """Resolve which supervisor a command is for.
+    """Locate the manifest for the target supervisor.
 
-    In order: an explicit manifest; ``--task`` as a task directory, a state
-    directory, or a name prefix; otherwise the only running supervisor. That
-    last rule is what keeps a phone session down to ``inTandem status``.
+    Checks in order: an explicit ``manifest`` path; ``task`` interpreted as a
+    state directory, task directory, or state-dir name prefix; or the single
+    running supervisor when ``task`` is omitted.
     """
     if manifest is not None:
         if not manifest.is_file():
@@ -144,7 +144,7 @@ def _detail(response: httpx.Response) -> str:
         return response.text[:300]
     if isinstance(body.detail, str):
         return body.detail
-    # FastAPI validation errors: name the field and the problem.
+    # Format FastAPI validation error lists as "field: message".
     return "; ".join(
         f"{'.'.join(str(part) for part in item.get('loc', [])[1:])}: {item.get('msg')}"
         for item in body.detail

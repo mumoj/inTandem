@@ -1,13 +1,11 @@
-"""Append a raw backend event stream to disk, stubbing oversized lines.
+"""Appends raw backend event lines to disk while stubbing oversized payloads.
 
-Harnesses sometimes emit multi-megabyte payloads (for instance, OpenCode
-re-broadcasting a whole compaction summary on every update). Rather than
-bloating the log with lines nothing reads back, the recorder notes that one
-arrived and how big it was.
+Some backends occasionally emit multi-megabyte events (for example, OpenCode
+re-broadcasting a full compaction summary). Oversized lines are replaced with a
+compact stub recording the event type and byte size.
 
-Flushing is batched: per-line flushes cost hundreds of thousands of syscalls on
-a busy task. Callers flush explicitly on events worth acting on, and the
-recorder flushes on its own at most once a second otherwise.
+Flushes are batched at most once per second unless a caller explicitly requests
+an immediate flush on important events, avoiding excessive syscall overhead.
 """
 
 from __future__ import annotations
@@ -20,14 +18,14 @@ from pathlib import Path
 from types import TracebackType
 from typing import IO, Self
 
-# ``"type"`` or ``"method"`` sits near the head of every event, so a bounded
-# window is enough to label an oversized line without decoding megabytes of it.
+# Scan only the first 512 bytes for "type" or "method" so we can label oversized
+# events without parsing the entire payload.
 _TYPE_PATTERN = re.compile(r'"(?:type|method)"\s*:\s*"([A-Za-z0-9_./-]+)"')
 _TYPE_SCAN = 512
 
 
 class StreamRecorder:
-    """Append raw stream lines to disk, with oversized lines replaced by a stub."""
+    """Append raw SSE event lines to disk, replacing oversized lines with a JSON stub."""
 
     def __init__(self, path: Path, max_line: int, *, flush_every: float = 1.0) -> None:
         self.path = path
@@ -39,8 +37,7 @@ class StreamRecorder:
         self._last_flush = 0.0
 
     def __enter__(self) -> Self:
-        # 0600: every file the model read and every command's output passes
-        # through this stream.
+        # Restrict permissions to 0600 because file contents and command output appear in the log.
         descriptor = os.open(self.path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
         self._sink = os.fdopen(descriptor, "a", encoding="utf-8")
         return self

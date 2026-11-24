@@ -1,8 +1,8 @@
-"""OpenCode 2 bus events as ``BackendEvent``.
+"""Translates OpenCode 2.x SSE events into normalized ``BackendEvent`` objects.
 
-2.x streams a tool call as several events, and only the first names the tool,
-so a ``Translator`` remembers each running call between them. One translator
-per event stream: a reconnect starts a fresh one, and the supervisor resyncs.
+Because OpenCode 2.x splits each tool invocation across multiple events (with
+the tool name only on the initial event), ``Translator`` tracks active calls
+for the lifetime of a single SSE connection.
 """
 
 from __future__ import annotations
@@ -45,7 +45,7 @@ class Translator:
     calls: dict[str, _Call] = field(default_factory=dict[str, _Call])
 
     def parse(self, line: str) -> BackendEvent | None:
-        """One SSE ``data`` payload, or ``None`` if it is not an event."""
+        """Parse an SSE ``data`` payload into a ``BackendEvent``, or ``None`` if invalid."""
         try:
             decoded = json.loads(line)
         except ValueError:
@@ -135,7 +135,7 @@ class Translator:
 
 
 def _summary(inputs: dict[str, Any]) -> str:
-    """A bounded one-line summary of a tool call's input: its command, or its path."""
+    """Format a length-bounded one-line summary of a tool call's main argument."""
     for key in ("command", "path", "pattern", "url", "description"):
         value = inputs.get(key)
         if isinstance(value, str) and value:

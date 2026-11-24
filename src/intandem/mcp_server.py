@@ -1,18 +1,14 @@
-"""inTandem as an MCP server, so a planner never has to learn the CLI.
+"""MCP server exposing inTandem's supervisor and worktree controls to a planner.
 
-Register it once (``claude mcp add inTandem -- inTandem mcp``) and the planner gets
-typed tools: start an implementer, hand it a spec, wait, review, reply. The
-supervisor is started on first use for the project the planner is working in,
-on this server's hub, and found again by directory; nobody types
-``inTandem serve`` or ``--task``. It stops with the MCP connection and resumes
-from its state file when the planner next uses it. Every reply carries the dashboard link, so the
-human can watch from a browser without knowing inTandem exists.
+Once registered (e.g. ``claude mcp add inTandem -- inTandem mcp``), the planner
+can start implementers, submit specs, wait for completion, review diffs, and
+respond to permission or question prompts. A supervisor is started lazily on
+first use for the working directory on this server's hub, shuts down when the
+MCP connection closes, and resumes from its state file on the next run.
 
-Several implementers work on one repository at once through spawn_implementer:
-each gets its own git worktree, branch and supervisor, wait_any wakes the
-planner when any of them needs it, and land_implementer reviews, merges or
-discards each one's work. Inside one spec, an implementer may also start
-OpenCode subagents of its own; their prompts and activity count toward the spec.
+Multiple implementers can run concurrently via ``spawn_implementer``, each in
+its own git worktree and branch, coordinated with ``wait_any`` and
+``land_implementer``.
 """
 
 from __future__ import annotations
@@ -107,15 +103,14 @@ NEXT_STEP: dict[WaitReason, str] = {
     WaitReason.TIMEOUT: "Still working: wait again.",
 }
 
-# Clients cut long tool calls off (Codex at 60 s by default), so a wait returns
-# before that and the planner calls it again. wait is level-triggered, so
-# nothing is missed between calls.
+# MCP clients enforce tool-call timeouts (e.g. 60 s in Codex), so wait returns
+# early and the planner retries. Because wait is level-triggered, nothing is missed.
 DEFAULT_WAIT = 50.0
 
 
 @dataclass
 class _Connection:
-    """What lives exactly as long as one MCP connection."""
+    """State scoped to the active MCP connection."""
 
     hub: Hub | None = None
 
@@ -127,14 +122,14 @@ def _new_opencode() -> SharedHost:
     records = _state_root() / "hosts"
     binary = resolve_binary(os.environ.get("INTANDEM_OPENCODE_BIN", "opencode"))
     host = SharedHost(binary, log_path=records / f"{os.getpid()}.log", records=records)
-    # Called on the event loop's thread, which lives as long as this process.
+    # Runs on the main event loop thread, which lives for the full process lifetime.
     host.start(die_with_parent=True)
     return host
 
 
 @contextlib.asynccontextmanager
 async def _lifespan(_server: MCPServer[None]) -> AsyncGenerator[None]:
-    """Start the hub when the planner connects; stop it, and every task, when it goes."""
+    """Start the hub when the MCP server starts and shut it down on exit."""
     reap_orphans(_state_root() / "hosts")
     hub = Hub(_state_root(), _new_opencode)
     await hub.start()
@@ -147,7 +142,7 @@ async def _lifespan(_server: MCPServer[None]) -> AsyncGenerator[None]:
 
 
 def _manifests() -> list[Manifest]:
-    """The manifest of every supervisor running on this machine."""
+    """Return manifests for all currently running supervisors on this machine."""
     found: list[Manifest] = []
     for path in sorted(_state_root().glob("*/manifest.json")):
         try:
@@ -202,7 +197,7 @@ def _task_dir(workdir: str | None) -> Path:
     if path.is_dir():
         return path
     if workdir and worktrees.NAME.fullmatch(workdir):
-        # Not a directory, so maybe a spawned implementer's name.
+        # Fall back to looking up a spawned implementer by worktree name.
         with contextlib.suppress(worktrees.GitError):
             repo = worktrees.repo_root(base)
             return worktrees.find_worktree(repo, workdir).path
@@ -225,7 +220,7 @@ def _git_errors() -> Generator[None, None, None]:
 
 
 def _stop(task_dir: Path, timeout: float = 30.0) -> bool:
-    """Finish the supervisor for ``task_dir`` and wait for it to exit. False if none ran."""
+    """Stop the supervisor for ``task_dir`` and wait for exit. Returns ``False`` if not running."""
     manifest = _running(task_dir)
     if manifest is None:
         return False
@@ -233,8 +228,7 @@ def _stop(task_dir: Path, timeout: float = 30.0) -> bool:
         client.post("/finish", Ok)
     path = TaskPaths.for_task(_state_root(), task_dir).manifest
     deadline = time.monotonic() + timeout
-    # A clean exit removes the manifest. The pid alone is not enough: a hub
-    # outlives the tasks it stops.
+    # Wait for the manifest to be removed, since the hub PID stays alive after a task stops.
     while path.exists() and manifest.alive and time.monotonic() < deadline:
         time.sleep(0.25)
     if path.exists() and manifest.alive:
@@ -243,7 +237,7 @@ def _stop(task_dir: Path, timeout: float = 30.0) -> bool:
 
 
 def _archive_state(task_dir: Path) -> Path | None:
-    """Move a finished implementer's state aside, keeping it as evidence."""
+    """Archive a finished implementer's state directory."""
     return worktrees.archive_state(_state_root(), task_dir)
 
 
@@ -259,7 +253,7 @@ def _running(task_dir: Path) -> Manifest | None:
 def _spawn(
     task_dir: Path, model: str | None, protect: list[str] | None, harness: str | None = None
 ) -> Manifest:
-    """Start supervising ``task_dir`` on this server's hub."""
+    """Start a supervisor for ``task_dir`` on the active hub."""
     hub = _CONNECTION.hub
     if hub is None:
         raise ToolError("the hub is not running: the MCP connection is starting or closing")
@@ -276,7 +270,7 @@ def _spawn(
 def _bridge(
     workdir: str | None, *, start: bool = False, harness: str | None = None
 ) -> Generator[BridgeClient, None, None]:
-    """A client for the implementer in ``workdir``, started first if ``start``."""
+    """Yield a ``BridgeClient`` for ``workdir``, starting a supervisor if ``start`` is True."""
     task_dir = _task_dir(workdir)
     manifest = _running(task_dir)
     if manifest is None:
@@ -297,7 +291,7 @@ def _dump(model: BaseModel) -> dict[str, Any]:
 
 
 def _links(manifest: Manifest) -> dict[str, str]:
-    """The dashboard for one implementer, and the overview of all of them if there is one."""
+    """Return the task dashboard URL and, when available, the hub overview URL."""
     links = {"dashboard": manifest.dashboard_url}
     if (hub := _CONNECTION.hub) is not None:
         links["overview"] = hub.dashboard_url
@@ -381,7 +375,7 @@ def list_models(harness: Harness = None) -> dict[str, Any]:
     models = _opencode_lines([binary, "models"])
     agents: list[dict[str, str]]
     if host is not None and host.version is not None and host.version.major == 2:
-        # 2.x dropped `opencode agent list`; its server lists them instead.
+        # OpenCode 2.x removed `opencode agent list`, so fetch agents from its HTTP API.
         agents = _agents_from(host)
     else:
         agents = []
@@ -402,7 +396,7 @@ ANTIGRAVITY_MODES = ("default", "accept-edits", "auto", "plan")
 
 
 def _antigravity_models() -> dict[str, Any]:
-    """``agy models``, one model ID per line, with agy's modes as the agents."""
+    """Run ``agy models`` and return available model IDs along with Antigravity modes."""
     binary = os.environ.get("INTANDEM_ANTIGRAVITY_BIN", "agy")
     try:
         done = subprocess.run(
@@ -424,7 +418,7 @@ def _antigravity_models() -> dict[str, Any]:
 
 
 def parse_antigravity_models(stdout: str) -> list[str]:
-    """Model IDs from ``agy models``: the first token of each line, past any spinner."""
+    """Extract model IDs from ``agy models`` output, ignoring any carriage-return spinner prefix."""
     models: list[str] = []
     for line in stdout.splitlines():
         tokens = line.rsplit("\r", 1)[-1].split()
@@ -434,7 +428,7 @@ def parse_antigravity_models(stdout: str) -> list[str]:
 
 
 def _agents_from(host: SharedHost) -> list[dict[str, str]]:
-    """The visible agents an OpenCode 2 server offers, as ``{name, mode}``."""
+    """Fetch visible agents from an OpenCode 2 server as ``{name, mode}`` dicts."""
     try:
         response = httpx.get(f"{host.url}/api/agent", auth=("opencode", host.password), timeout=30)
         response.raise_for_status()
@@ -535,11 +529,11 @@ def spawn_implementer(
 
 
 class ImplementerState(BaseModel):
-    """One spawned implementer, as wait_any sees it."""
+    """Status summary for a spawned implementer returned by ``wait_any``."""
 
     name: str
     state: str
-    """``working``, ``stopped``, or the reason ``wait`` would give: result, blocked, ..."""
+    """``working``, ``stopped``, or a ``WaitReason`` value (e.g. ``result``, ``blocked``)."""
     spec_id: str | None = None
     detail: str = ""
     next_step: str = ""
@@ -552,7 +546,7 @@ class ImplementerState(BaseModel):
 class WaitAnyOut(BaseModel):
     reason: Literal["ready", "all_stopped", "timeout"]
     ready: list[ImplementerState]
-    """Every implementer that needs the planner now, not only the first."""
+    """All implementers that currently need attention."""
     working: list[str]
     stopped: list[str]
 
@@ -601,8 +595,8 @@ def _describe(state: ImplementerState) -> str:
 @server.tool(annotations=READ)
 async def wait_any(
     ctx: Context,
-    # A tool argument named like wait's, not a cancellation scope: the loop below
-    # returns at the deadline with what it saw, which fail_after would discard.
+    # Keep timeout as a tool parameter rather than an anyio cancel scope so we can
+    # return the observed state when the deadline expires.
     timeout: Annotated[  # noqa: ASYNC109
         float, Field(gt=0, le=3600, description="Seconds to block. Keep under your client's limit.")
     ] = DEFAULT_WAIT,
@@ -888,7 +882,7 @@ def finish(workdir: Workdir = None) -> str:
 
 
 def main() -> None:
-    # One INFO line per bridge request drowns the client's MCP log.
+    # Suppress per-request INFO logs from httpx so they do not flood MCP stderr logs.
     logging.getLogger("httpx").setLevel(logging.WARNING)
     server.run("stdio")
 

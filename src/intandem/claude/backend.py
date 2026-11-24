@@ -1,30 +1,21 @@
-"""``ClaudeCodeBackend``: Claude Code, through the Claude Agent SDK, as an implementer.
+"""``ImplementerBackend`` adapter for Claude Code via the Claude Agent SDK.
 
-One ``ClaudeSDKClient`` per session, each running the user's own ``claude``
-CLI in the task directory, so it uses whatever that CLI is logged in with
-(``claude auth login``: the user's subscription). inTandem never sets
-``ANTHROPIC_API_KEY``.
+Each session runs a ``ClaudeSDKClient`` backed by the local ``claude`` CLI in
+the task directory, using the user's existing CLI authentication.
 
-The SDK pushes; the seam pulls. Each turn's messages are read by a background
-task into one event queue that ``events()`` serves, and every request the CLI
-makes of its host (a tool permission, a question, a protected edit) parks a
-future in a pending map until the planner answers through ``reply_permission``
-or ``reply_question``.
+Because the SDK pushes messages and permission callbacks while the supervisor
+interface is pull-based, each session reads messages into an event queue served
+by ``events()`` and stores pending permission/question futures in maps resolved
+by ``reply_permission`` and ``reply_question``.
 
-**How protected files are guarded.** By a ``PreToolUse`` hook, not by
-``can_use_tool``. The SDK documents that ``can_use_tool`` is only consulted
-when the CLI's own permission rules come out at "ask": a tool call already
-allowed by the user's ``permissions.allow`` settings or by a permission mode
-never reaches it. A ``PreToolUse`` hook sees every tool call, whatever the
-rules say, including calls made inside a subagent. So the hook checks each
-``Edit``/``Write``/``MultiEdit``/``NotebookEdit`` against ``Guard.protected``
-and, on a match, parks the call as a permission request and waits for the
-planner, then answers ``allow`` or ``deny`` itself. Its matcher runs with a
-long timeout and ``on_failure="block"``: a hook that fails or times out stops
-the edit rather than letting it through. Everything else is decided in
-``can_use_tool``: allowed at once when the guard is unattended, otherwise
-parked for the planner like a protected edit. A shell command that writes a
-protected file is not an edit tool; the supervisor's content hash catches it.
+Protected-file enforcement uses a ``PreToolUse`` hook rather than relying solely
+on ``can_use_tool``: ``can_use_tool`` is bypassed when a user's CLI rules or
+permission mode already allow a tool, whereas ``PreToolUse`` intercepts every
+tool call (including subagent calls). Matching edits to ``Edit``/``Write``/
+``MultiEdit``/``NotebookEdit`` pause on a pending permission future with
+``on_failure="block"``. Non-protected calls fall through to ``can_use_tool``.
+Shell commands that write protected files are caught by the supervisor's
+content-hash checks.
 """
 
 from __future__ import annotations
@@ -85,7 +76,7 @@ log = logging.getLogger(__name__)
 PROVIDERS = frozenset({"anthropic", "claude"})
 QUESTION_TOOL = "AskUserQuestion"
 HOOK_TIMEOUT = 7 * 24 * 3600.0
-"""Seconds a protected edit may wait for the planner. Past it, the edit is refused."""
+"""Timeout (seconds) for a protected-edit permission hook before blocking."""
 
 
 @dataclass
@@ -93,7 +84,7 @@ class _Pending:
     session_id: str
     future: asyncio.Future[Any]
     protected: list[str] = field(default_factory=list[str])
-    """For a protected edit: the paths it would write."""
+    """Protected paths targeted by this edit request, if any."""
 
 
 @dataclass
@@ -102,33 +93,33 @@ class _Session:
     title: str
     guard: Guard
     sdk_session_id: str
-    """The CLI's own session id (a UUID), which names its transcript on disk."""
+    """UUID used by the ``claude`` CLI for this session's transcript on disk."""
     base: str | None
-    """The commit the task directory was at when the session started, for ``diff``."""
+    """HEAD commit when the session was created, used as the baseline for ``diff``."""
     translator: translate.Translator
     client: SDKClient | None = None
     reader: asyncio.Task[None] | None = None
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     model: str | None = None
     connected_before: bool = False
-    """A reconnect resumes the CLI's session instead of starting it again."""
+    """True after the first connection so reconnects resume the existing CLI session."""
     busy: bool = False
     aborting: bool = False
     epoch: int = 0
-    """Bumped on every disconnect so an in-flight connect cannot attach to a retired session."""
+    """Incremented on disconnect so an in-flight connect cannot attach to a closed session."""
     always: set[str] = field(default_factory=set[str])
-    """Tools the planner allowed for the rest of the session."""
+    """Tool names approved with ``always`` for the remainder of the session."""
     always_protected: set[tuple[str, str]] = field(default_factory=set[tuple[str, str]])
-    """(tool, path) pairs the planner allowed for the rest of the session."""
+    """``(tool, path)`` pairs approved with ``always`` for the remainder of the session."""
     transcript: list[Message] = field(default_factory=list[Message])
     cost: float = 0.0
     tokens: TokenUsage = field(default_factory=TokenUsage)
     live_usage: dict[str, TokenUsage] = field(default_factory=dict[str, TokenUsage])
-    """Per-message usage seen during the active turn, replaced by ``ResultMessage`` totals."""
+    """Per-message token counts during an active turn, cleared when ``ResultMessage`` arrives."""
 
 
 class ClaudeCodeBackend:
-    """``ImplementerBackend`` over Claude Code. One instance serves one task directory."""
+    """``ImplementerBackend`` backed by Claude Code for a single task directory."""
 
     def __init__(
         self,
@@ -165,7 +156,7 @@ class ClaudeCodeBackend:
         await self.aclose()
 
     async def aclose(self) -> None:
-        """Stop every session's CLI and end the event stream."""
+        """Cancel pending requests, disconnect all session CLIs, and close the event stream."""
         for pending in [p for _, p in [*self._permissions.values(), *self._questions.values()]]:
             if not pending.future.done():
                 pending.future.cancel()
@@ -175,7 +166,7 @@ class ClaudeCodeBackend:
             await self._disconnect(session)
         self._events.put_nowait(None)
 
-    # ---- the seam ------------------------------------------------------------
+    # ---- ImplementerBackend protocol -----------------------------------------
 
     async def health(self) -> Health:
         if self._version is None:
@@ -183,11 +174,10 @@ class ClaudeCodeBackend:
         return Health(healthy=True, version=self._version)
 
     async def create_session(self, title: str, guard: Guard) -> Session:
-        """A new session. Its CLI starts with the first prompt.
+        """Create a new session (its CLI process starts on the first prompt).
 
-        A task runs one spec at a time, and the supervisor aborts a spec before
-        starting the next, so the older sessions' CLIs are stopped here. Their
-        transcripts and totals stay readable.
+        Disconnects any earlier sessions' CLIs while retaining their transcripts
+        and usage totals for reporting.
         """
         for older in self._sessions.values():
             await self._disconnect(older)
@@ -214,14 +204,7 @@ class ClaudeCodeBackend:
         return self._info(self._session(session_id))
 
     async def guard_subagent(self, session_id: str, guard: Guard, inherited: object = None) -> None:
-        """Nothing to do: a Claude Code subagent is not a session of its own.
-
-        The SDK runs a subagent (the Agent/Task tool) inside the same CLI
-        process and session, and its tool calls go through the same
-        ``PreToolUse`` hook and ``can_use_tool`` callback, so the session's guard
-        already covers it. inTandem never sees a separate subagent session, so
-        this is not called in practice.
-        """
+        """No-op because Claude Code subagents share the parent CLI session and hooks."""
         self._session(session_id)
 
     async def session_status(self) -> dict[str, SessionStatus]:
@@ -237,7 +220,7 @@ class ClaudeCodeBackend:
     async def prompt(
         self, session_id: str, text: str, model: ModelRef | None, agent: str | None = None
     ) -> None:
-        """Queue a prompt and return at once. The turn runs in the background."""
+        """Queue a prompt asynchronously and run the turn in a background task."""
         session = self._session(session_id)
         if agent is not None:
             raise BackendError("the claude harness has no agents: leave `agent` unset")
@@ -298,20 +281,16 @@ class ClaudeCodeBackend:
         return True
 
     async def diff(self, session_id: str) -> list[FileDiff]:
-        """What changed in the task directory since the session started, from git.
-
-        Against the commit the directory was at then, so a commit the
-        implementer made still shows. Untracked files count as added.
-        """
+        """Return git diff stats since the session's baseline commit, including untracked files."""
         session = self._session(session_id)
         return await git_diff(self.cwd, session.base)
 
     async def events(self) -> AsyncIterator[BackendEvent]:
-        """The backend's own event queue. Returns once the backend is closed."""
+        """Yield queued backend events until ``aclose()`` is called."""
         yield BackendEvent(type=EventType.CONNECTED, native_type="claude.connected", raw="{}")
         while (event := await self._events.get()) is not None:
             yield event
-        self._events.put_nowait(None)  # Any later reader ends too.
+        self._events.put_nowait(None)  # Re-queue sentinel for any subsequent readers.
 
     # ---- turns -----------------------------------------------------------------
 
@@ -382,7 +361,7 @@ class ClaudeCodeBackend:
         body: dict[str, Any] = native  # pyright: ignore[reportUnknownVariableType]
         kind = dig_str(body, "type")
         if kind in ("assistant", "stream_event") and not session.busy:
-            # A prompt queued behind the last turn has started its own.
+            # A follow-up prompt queued behind the previous turn has begun.
             self._set_busy(session, True)
         if kind == "assistant":
             entry = translate.assistant_message(body, f"msg_{next(self._ids)}")
@@ -396,9 +375,8 @@ class ClaudeCodeBackend:
             session.busy = False
             cost = dig(body, "total_cost_usd")
             if isinstance(cost, int | float):
-                # The CLI reports the session's running total, not the turn's.
+                # total_cost_usd is cumulative for the session, whereas usage is per turn.
                 session.cost = float(cost)
-            # Per turn in a streaming session, so these add up.
             turn = translate.token_usage(dig(body, "usage"))
             session.tokens = translate.add_usage(session.tokens, turn)
             session.live_usage.clear()
@@ -485,12 +463,11 @@ class ClaudeCodeBackend:
             cwd=self.cwd,
             cli_path=self._cli_path(),
             model=model,
-            # Our id for the CLI's session, so its transcript on disk can be found.
+            # Assign an explicit session UUID so we can resume it after reconnecting.
             session_id=None if session.connected_before else session.sdk_session_id,
             resume=session.sdk_session_id if session.connected_before else None,
-            # Explicit, so a user's settings cannot switch to acceptEdits or
-            # bypassPermissions under the planner. The hook guards protected
-            # files whatever the mode; this keeps the other asks reaching us.
+            # Force "default" mode so local CLI settings cannot auto-approve or
+            # bypass permissions without reaching our callbacks.
             permission_mode="default",
             can_use_tool=can_use_tool,
             hooks={
@@ -528,7 +505,7 @@ class ClaudeCodeBackend:
     async def _pre_tool_use(
         self, session: _Session, hook_input: HookInput, tool_use_id: str | None
     ) -> HookJSONOutput:
-        """Stop an edit to a protected path until the planner answers it."""
+        """Pause edits to protected paths until the planner approves or denies them."""
         if hook_input["hook_event_name"] != "PreToolUse":
             return {}
         tool = hook_input["tool_name"]
@@ -576,7 +553,7 @@ class ClaudeCodeBackend:
             return PermissionResultAllow(updated_input={**tool_input, "answers": answers})
         hits = protected_paths(tool, tool_input, self.cwd, session.guard.protected)
         hits = [path for path in hits if (tool, path) not in session.always_protected]
-        # The hook stops protected edits first; this is the second line.
+        # Backup check in case a protected edit bypassed the PreToolUse hook.
         if not hits and (tool in session.always or session.guard.unattended):
             return PermissionResultAllow()
         patterns = hits or edit_paths(tool, tool_input) or _command(tool_input)
@@ -635,7 +612,7 @@ class ClaudeCodeBackend:
     async def _ask_question(
         self, session: _Session, tool_input: dict[str, Any]
     ) -> dict[str, str] | None:
-        """Park an ``AskUserQuestion`` call; the answers, keyed by question, or ``None``."""
+        """Pause an ``AskUserQuestion`` call and return answers keyed by question, or ``None``."""
         infos = [
             QuestionInfo(
                 question=dig_str(q, "question") or "",
@@ -689,7 +666,7 @@ class ClaudeCodeBackend:
         return entry[1]
 
     def _settle_pending(self, session_id: str, message: str) -> None:
-        """Refuse whatever the session is waiting on, as an abort should."""
+        """Reject any pending permission or question futures for ``session_id``."""
         for _, pending in list(self._permissions.values()):
             if pending.session_id == session_id and not pending.future.done():
                 pending.future.set_result(("reject", message))
@@ -810,7 +787,7 @@ def _result_text(content: object) -> str:
 
 
 def _preview_metadata(tool: str, tool_input: object) -> dict[str, str]:
-    """``command`` or ``diff`` for the dashboard's permission card."""
+    """Extract a ``command`` or ``diff`` preview for the dashboard permission card."""
     if command := dig_str(tool_input, "command"):
         return {"command": command}
     diff = _edit_preview(tool, tool_input)

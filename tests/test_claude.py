@@ -1,8 +1,7 @@
-"""The Claude Code backend, against an in-memory stand-in for the SDK client.
+"""Unit tests for ``ClaudeCodeBackend`` using an in-memory fake ``SDKClient``.
 
-The SDK's own message and result types are real; only ``ClaudeSDKClient`` is
-faked, so no CLI runs and nothing leaves the machine. ``test_claude_e2e.py``
-covers the real CLI.
+Uses the real SDK message and result dataclasses while stubbing out
+``ClaudeSDKClient`` so tests run locally without invoking the ``claude`` CLI.
 """
 
 from __future__ import annotations
@@ -42,7 +41,7 @@ from intandem.config import Settings
 
 
 class FakeSDKClient:
-    """``ClaudeSDKClient`` without the CLI: tests push the messages it would read."""
+    """In-memory fake ``ClaudeSDKClient`` backed by a test-controlled message queue."""
 
     def __init__(self, options: ClaudeAgentOptions) -> None:
         self.options = options

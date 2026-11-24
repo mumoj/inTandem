@@ -1,15 +1,9 @@
-"""End to end: inTandem driving a real ``opencode serve`` with a scripted model.
+"""End-to-end tests driving a real ``opencode serve`` with the scripted mock LLM.
 
-Nothing here is faked except the model's choices. The OpenCode binary, its
-permission system and its event stream are real, which is the test the
-in-memory fake cannot stand in for: a client stubbed in tests can pass locally
-and still deadlock against the real service.
-
-Needs OpenCode 1.x or 2.x: set ``INTANDEM_TEST_OPENCODE`` to the binary, or have
-``opencode`` on PATH. The same scripts run against either: the scripted model
-fits its tool calls to whichever tools the server offers. The first run
-downloads OpenCode's OpenAI-compatible provider package into
-``INTANDEM_TEST_CACHE`` (default ``~/.cache/intandem-test``).
+Uses the real OpenCode binary, permission rules, and SSE stream while scripting
+only the model's responses. Requires OpenCode 1.x or 2.x on ``PATH`` or via
+``INTANDEM_TEST_OPENCODE``. The first run caches OpenCode's OpenAI-compatible
+provider package in ``INTANDEM_TEST_CACHE`` (default ``~/.cache/intandem-test``).
 """
 
 from __future__ import annotations

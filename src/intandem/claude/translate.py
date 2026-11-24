@@ -1,12 +1,8 @@
-"""Claude Agent SDK messages as ``BackendEvent`` and transcript messages.
+"""Translates Claude Agent SDK messages into ``BackendEvent`` and transcript models.
 
-The SDK hands over typed dataclasses (``AssistantMessage``, ``ResultMessage``,
-...). ``to_native`` turns each into a JSON-able dict tagged with the wire
-``type`` it came from, and everything after that reads the dict, so this
-module never imports the SDK and its tests need no CLI.
-
-Every read of an SDK message by key lives here, as ``opencode/translate.py``
-does for OpenCode.
+``to_native`` converts SDK dataclasses into plain JSON-serializable dicts tagged
+with their wire ``type``. Downstream translation operates only on those dicts so
+this module does not need to import the optional SDK.
 """
 
 from __future__ import annotations
@@ -23,9 +19,9 @@ PROVIDER = "anthropic"
 _TOOL_DETAIL_LIMIT = 240
 
 EDIT_TOOLS = frozenset({"Edit", "Write", "MultiEdit", "NotebookEdit"})
-"""The SDK's file-editing tools: the ones a protected path stops."""
+"""Claude Code file-editing tools checked against protected-file patterns."""
 
-# The SDK's class names, as the type each one is on the wire.
+# Maps SDK dataclass names to their wire message/block type tags.
 _TAGS = {
     "TextBlock": "text",
     "ThinkingBlock": "thinking",
@@ -51,10 +47,10 @@ def _tag(value: object) -> str:
 
 
 def to_native(value: object) -> Any:
-    """An SDK message, block or value as plain JSON-able data.
+    """Convert an SDK dataclass, block, or nested value into plain JSON-serializable data.
 
-    Each dataclass becomes a dict with its wire ``type`` first. A
-    ``SystemMessage`` subclass keeps ``type: system``; its ``subtype`` says which.
+    Dataclasses are converted to dicts with a ``type`` tag (``SystemMessage``
+    subclasses retain ``type: "system"`` and use ``subtype`` to distinguish them).
     """
     if dataclasses.is_dataclass(value) and not isinstance(value, type):
         out: dict[str, Any] = {"type": _tag(value)}
@@ -75,7 +71,7 @@ def dumps(native: object) -> str:
 
 
 def tool_detail(tool: str, status: str, tool_input: object) -> str:
-    """A bounded one-line summary of a tool call, for stall diagnosis."""
+    """Format a length-bounded one-line summary of a tool call for stall reporting."""
     summary = next(
         (
             value
@@ -93,7 +89,7 @@ def tool_detail(tool: str, status: str, tool_input: object) -> str:
 
 
 def token_usage(usage: object) -> TokenUsage:
-    """The Messages API ``usage`` block in neutral terms."""
+    """Convert an Anthropic Messages API ``usage`` dict into a ``TokenUsage`` model."""
 
     def number(key: str) -> float:
         value = dig(usage, key)
@@ -120,10 +116,10 @@ def add_usage(total: TokenUsage, more: TokenUsage) -> TokenUsage:
 
 
 class Translator:
-    """One session's SDK messages as neutral events.
+    """Translates SDK messages for a single session into ``BackendEvent`` objects.
 
-    Stateful only to remember each tool call's name and input between its
-    ``tool_use`` and its ``tool_result``, which arrive in different messages.
+    Tracks tool call names and inputs between ``tool_use`` and ``tool_result``
+    blocks since they arrive in separate messages.
     """
 
     def __init__(self, session_id: str) -> None:
@@ -131,7 +127,7 @@ class Translator:
         self._calls: dict[str, tuple[str, object]] = {}
 
     def translate(self, native: dict[str, Any], *, aborting: bool = False) -> list[BackendEvent]:
-        """The events one message makes. The first carries the message's line in ``raw``."""
+        """Translate one message into zero or more events (the first carries the full raw JSON)."""
         kind = dig_str(native, "type") or "unknown"
         events: list[BackendEvent] = []
         match kind:
@@ -279,7 +275,7 @@ class Translator:
 
 
 def assistant_message(native: dict[str, Any], message_id: str) -> Message:
-    """One ``AssistantMessage`` as a transcript entry."""
+    """Convert an ``AssistantMessage`` dict into a transcript ``Message``."""
     parts: list[Part] = []
     for block in dig_list(native, "content"):
         match dig_str(block, "type"):

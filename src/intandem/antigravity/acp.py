@@ -1,19 +1,16 @@
-"""A JSON-RPC 2.0 client for ACP (Agent Client Protocol) over a child's stdio.
+"""Bidirectional JSON-RPC 2.0 client for ACP (Agent Client Protocol) over stdio.
 
-``agy acp`` speaks ACP as newline-delimited JSON on stdin and stdout. Both
-sides send requests: inTandem asks for ``session/prompt``, and the agent asks
-back for ``session/request_permission`` while the prompt is still running. So
-the transport reads one stream for three kinds of line:
+``agy acp`` exchanges newline-delimited JSON on stdin/stdout, with both sides
+initiating requests (e.g. ``session/prompt`` from inTandem and
+``session/request_permission`` from the agent). Incoming lines are dispatched as:
 
-* a response (``id`` with ``result`` or ``error``) resolves the request it answers,
-* a request (``id`` with ``method``) goes to the request handler, in a task of
-  its own, and its return value is written back as the response, and
-* a notification (``method`` without ``id``) goes to the notification
-  handler, inline, so ``session/update`` notifications keep their order.
+* responses (``id`` + ``result``/``error``) resolving pending futures,
+* requests (``id`` + ``method``) run in background tasks whose results are
+  written back as JSON-RPC responses, and
+* notifications (``method`` without ``id``) invoked inline to preserve ordering.
 
-Only the stdlib: ``asyncio.create_subprocess_exec`` and ``json``. Tests hand
-the backend an in-memory ``ACPTransport`` through a ``TransportFactory`` and
-never spawn ``agy``.
+Uses only stdlib ``asyncio`` and ``json``. Tests inject an in-memory
+``ACPTransport`` via ``TransportFactory``.
 """
 
 from __future__ import annotations
@@ -34,20 +31,20 @@ from intandem.backend.errors import BackendError
 log = logging.getLogger(__name__)
 
 STREAM_LIMIT = 64 * 1024 * 1024
-"""Bytes one line may hold. A tool's whole output can arrive in one update."""
+"""Maximum line buffer size (bytes) for stdout reads, since tool outputs can be large."""
 STDERR_LINES = 200
-"""How much of the agent's stderr is kept, for the error a crash reports."""
+"""Number of recent stderr lines retained for crash diagnostics."""
 CLOSE_GRACE = 5.0
-"""Seconds the agent gets to exit after its stdin closes, before it is terminated."""
+"""Seconds to wait for the subprocess to exit after closing stdin before terminating it."""
 
 NotificationHandler = Callable[[str, dict[str, Any]], None]
-"""Called with ``(method, params)`` for every notification, in arrival order."""
+"""Callback invoked inline with ``(method, params)`` for each JSON-RPC notification."""
 RequestHandler = Callable[[str, dict[str, Any]], Awaitable[object]]
-"""Called with ``(method, params)`` for every request; its return value is the result."""
+"""Async callback invoked with ``(method, params)`` for agent-initiated JSON-RPC requests."""
 
 
 class ACPError(BackendError):
-    """The agent answered a request with a JSON-RPC error."""
+    """Raised when the agent responds with a JSON-RPC error object."""
 
     def __init__(self, method: str, code: object, message: str, data: object = None) -> None:
         super().__init__(f"{method} failed ({code}): {message}")
@@ -56,25 +53,25 @@ class ACPError(BackendError):
         self.data = data
 
 
-class MethodNotFound(Exception):  # noqa: N818  # The JSON-RPC error's own name.
-    """Raised by a request handler for a method it does not serve."""
+class MethodNotFound(Exception):  # noqa: N818  # Matches the JSON-RPC error name.
+    """Raised by a request handler when it does not implement the requested method."""
 
 
 class ACPTransport(Protocol):
-    """One ACP connection: what ``AntigravityBackend`` calls."""
+    """Transport interface used by ``AntigravityBackend``."""
 
     async def start(self) -> None:
-        """Start the agent. Raises ``BackendError`` if it cannot run."""
+        """Start the ACP subprocess, raising ``BackendError`` on failure."""
         ...
 
     async def request(self, method: str, params: dict[str, Any]) -> Any:
-        """Send a request and wait for its result. Raises ``BackendError`` on an error."""
+        """Send a JSON-RPC request and await its result, raising ``BackendError`` on failure."""
         ...
 
     async def notify(self, method: str, params: dict[str, Any]) -> None: ...
 
     async def close(self) -> None:
-        """Stop the agent. Every request still waiting fails with ``BackendError``."""
+        """Shut down the transport and fail any pending requests with ``BackendError``."""
         ...
 
     @property
@@ -86,11 +83,11 @@ class ACPTransport(Protocol):
 
 
 TransportFactory = Callable[[str, Path], ACPTransport]
-"""Builds a transport from ``(cli, cwd)``. The default runs ``[cli, "acp"]``."""
+"""Factory taking ``(cli, cwd)`` and returning an ``ACPTransport``."""
 
 
 class StdioACPTransport:
-    """``[cli, "acp"]`` as a child process, spoken to over its stdin and stdout."""
+    """Runs ``[cli, "acp"]`` as a subprocess and communicates over JSON-RPC stdio."""
 
     def __init__(self, cli: str, cwd: Path) -> None:
         self.cli = cli

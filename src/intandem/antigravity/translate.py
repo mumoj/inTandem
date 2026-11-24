@@ -1,10 +1,8 @@
-"""ACP ``session/update`` notifications as ``BackendEvent`` and transcript messages.
+"""Translates ACP ``session/update`` notifications into ``BackendEvent`` and transcript models.
 
-Every read of an ACP payload by key lives here and in ``guard.py``, as
-``claude/translate.py`` does for the Agent SDK. The ``Translator`` keeps one
-session's state between notifications: each tool call's fields, since a
-``tool_call_update`` sends only what changed, and the assistant message the
-turn is building, which ``messages()`` serves once ``session/prompt`` returns.
+``Translator`` maintains per-session state across incremental updates, merging
+partial ``tool_call_update`` fields and accumulating assistant message parts
+until ``session/prompt`` finishes.
 """
 
 from __future__ import annotations
@@ -28,7 +26,7 @@ def dumps(native: object) -> str:
 
 
 def tool_detail(tool: str, status: str, call: object) -> str:
-    """A bounded one-line summary of a tool call, for stall diagnosis."""
+    """Format a length-bounded one-line summary of a tool call for stall reporting."""
     summary = next(
         (
             value
@@ -53,7 +51,7 @@ def tool_detail(tool: str, status: str, call: object) -> str:
 
 
 def token_usage(usage: object) -> TokenUsage:
-    """A ``session/prompt`` result's ``usage`` in neutral terms."""
+    """Convert an ACP ``session/prompt`` ``usage`` dict into a ``TokenUsage`` model."""
 
     def number(key: str) -> float:
         value = dig(usage, key)
@@ -79,7 +77,7 @@ def add_usage(total: TokenUsage, more: TokenUsage) -> TokenUsage:
 
 
 class Translator:
-    """One ACP session's updates as neutral events, and its turns as messages."""
+    """Translates ACP session updates into ``BackendEvent`` objects and assembles messages."""
 
     def __init__(self, session_id: str) -> None:
         self.session_id = session_id
@@ -88,7 +86,7 @@ class Translator:
         self._parts: list[Part] = []
 
     def update(self, params: dict[str, Any]) -> list[BackendEvent]:
-        """The events one ``session/update`` makes. The first carries it in ``raw``."""
+        """Translate a ``session/update`` notification (first event carries the full raw JSON)."""
         update = dig(params, "update")
         body = cast(dict[str, Any], update) if isinstance(update, dict) else {}
         kind = dig_str(body, "sessionUpdate") or "unknown"
@@ -101,8 +99,7 @@ class Translator:
             case "tool_call" | "tool_call_update":
                 events = self._tool(body)
             case _:
-                # usage_update, session_info_update, available_commands_update,
-                # config_option_update, plan, ...: recorded, nothing to act on.
+                # Record informational updates (usage, plan, commands, etc.) without acting on them.
                 pass
         if not events:
             events = [self._event(EventType.OTHER)]
@@ -118,7 +115,7 @@ class Translator:
         return events
 
     def finish(self, result: object, message_id: str, model: str | None) -> Message:
-        """The turn ``session/prompt`` just ended, as one assistant message."""
+        """Finalize the accumulated parts from a completed turn into an assistant ``Message``."""
         usage = dig(result, "usage")
         parts, self._parts = self._parts, []
         self._calls.clear()

@@ -1,16 +1,13 @@
-"""A deterministic stand-in for a model: an OpenAI-compatible server with a script.
+"""Deterministic OpenAI-compatible mock server for end-to-end tests with OpenCode.
 
-OpenCode talks to it through its ordinary ``@ai-sdk/openai-compatible``
-provider, so everything between the supervisor and the model is the real
-thing: the real ``opencode serve``, its permission system, its event stream.
-Only the model's choices are scripted.
+OpenCode connects to this server through its standard
+``@ai-sdk/openai-compatible`` provider so the real server, permission rules,
+and event stream are exercised while model responses stay deterministic.
 
-A script maps a marker to a list of steps. Each request is answered from the
-list whose marker appears in the most recent user message that has one (a
-spec prompt carries ``INTANDEM_SPEC_ID: S-1``, a directive ``INTANDEM_DIRECTIVE_ID:
-D-1``), at the index given by how many assistant messages follow that message.
-Counting from the prompt rather than from the start of the session keeps the
-script on track when a turn is aborted part way through.
+Each script maps a prompt marker (e.g. ``INTANDEM_SPEC_ID: S-1`` or
+``INTANDEM_DIRECTIVE_ID: D-1``) to a sequence of scripted steps. Responses are
+indexed by the number of assistant messages following the most recent matching
+marker so scripts stay aligned even after mid-turn aborts.
 """
 
 from __future__ import annotations
@@ -104,11 +101,7 @@ _RENAMED_ARGUMENTS = {"filePath": "path"}
 def _fit(
     name: str, arguments: dict[str, Any], tools: list[dict[str, Any]]
 ) -> tuple[str, dict[str, Any]]:
-    """A 1.x tool call in the terms of the tools this request offers.
-
-    Scripts stay written once: the call is fitted to whichever OpenCode sent
-    the request, read from the tools' own names and parameters.
-    """
+    """Adapt a 1.x-style scripted tool call to the tool names and parameters in the request."""
     offered = {
         tool["function"]["name"]: tool["function"].get("parameters", {}).get("properties", {})
         for tool in tools

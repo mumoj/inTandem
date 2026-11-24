@@ -1,9 +1,4 @@
-"""A typed async client for the OpenCode 1.x server API.
-
-``OpenCodeClient`` is one adapter behind ``ImplementerBackend``: it speaks
-OpenCode's HTTP API and wire shapes, and hands the supervisor inTandem's
-neutral models.
-"""
+"""Async HTTP/SSE client implementing ``ImplementerBackend`` for OpenCode 1.x."""
 
 from __future__ import annotations
 
@@ -36,7 +31,7 @@ from intandem.opencode.translate import from_opencode
 
 
 class OpenCodeError(backend_errors.BackendError):
-    """OpenCode answered with an error, or could not be reached at all."""
+    """Raised when the OpenCode server returns an error or cannot be reached."""
 
     def __init__(self, method: str, path: str, status_code: int | None, detail: str = "") -> None:
         self.method = method
@@ -50,15 +45,15 @@ class OpenCodeError(backend_errors.BackendError):
 
 
 class NotFoundError(OpenCodeError, backend_errors.NotFoundError):
-    """The session, permission or question no longer exists."""
+    """Raised when a session, permission request, or question does not exist."""
 
 
 OpenCodeAPI = ImplementerBackend
-"""The old name of the seam, kept for one release."""
+"""Deprecated alias for ``ImplementerBackend``, kept for backwards compatibility."""
 
 
 def _neutral[T: BaseModel](kind: type[T], source: BaseModel) -> T:
-    """``source`` re-read as the neutral ``kind``: field names line up, extras ride along."""
+    """Convert an OpenCode wire model into the corresponding backend model."""
     return kind.model_validate(source.model_dump())
 
 
@@ -70,8 +65,7 @@ _DIFFS = TypeAdapter(list[FileDiff])
 
 
 def _merge_diffs(turns: Iterable[list[FileDiff]]) -> list[FileDiff]:
-    """One summary per file. OpenCode's patch text is dropped: it can be huge, and
-    a turn's patch says nothing about the file once a later turn has changed it."""
+    """Sum per-turn diff stats per file, omitting raw patch text."""
     merged: dict[str | None, FileDiff] = {}
     for turn in turns:
         for diff in turn:
@@ -87,16 +81,13 @@ _BOOL = TypeAdapter(bool)
 
 
 class OpenCodeClient:
-    """HTTP access to one ``opencode serve`` process.
+    """Async HTTP client for an ``opencode serve`` 1.x instance.
 
-    Concurrency is capped by the connection pool rather than a lock. An
-    exclusive lock in the first version let one slow call, a multi-megabyte
-    evidence capture, stall the supervisor, the bridge and permission replies
-    behind it.
+    Concurrency is bounded by the httpx connection pool rather than a mutex so
+    large reads (like session captures) do not block permission replies.
 
-    With ``directory``, the client is one tenant of a server shared by several
-    tasks: every request names its directory, and the event stream is the
-    server-wide one filtered to it.
+    When ``directory`` is set, requests include it as a query parameter and
+    ``events()`` subscribes to ``/global/event`` filtered to that directory.
     """
 
     def __init__(
@@ -173,7 +164,7 @@ class OpenCodeClient:
     async def set_session_permission(
         self, session_id: str, permission: list[PermissionRule]
     ) -> None:
-        """Replace a session's whole ruleset. OpenCode-only; the seam uses guards."""
+        """Replace a session's OpenCode permission ruleset."""
         await self._request(
             "PATCH", f"/session/{session_id}", json={"permission": _dump_rules(permission)}
         )
@@ -190,7 +181,7 @@ class OpenCodeClient:
     async def prompt(
         self, session_id: str, text: str, model: ModelRef | None, agent: str | None = None
     ) -> None:
-        """Queue a prompt and return at once. The turn runs on the server."""
+        """Queue a prompt asynchronously; the turn runs on the OpenCode server."""
         body: dict[str, Any] = {"parts": [{"type": "text", "text": text}]}
         if model is not None:
             if model.provider_id is None:
@@ -239,10 +230,10 @@ class OpenCodeClient:
         return _BOOL.validate_json(response.content)
 
     async def diff(self, session_id: str) -> list[FileDiff]:
-        """What the session changed, summed across its turns.
+        """Aggregate file diffs across all user turns in ``session_id``.
 
-        OpenCode keeps a diff per user message and answers an empty list without
-        a ``messageID``, so a session has to be asked one turn at a time.
+        OpenCode returns per-message diffs and yields an empty list when
+        ``messageID`` is omitted, so each user turn is queried individually.
         """
         messages = await self.messages(session_id)
         turns = [message.info.id for message in messages if message.info.role == "user"]
@@ -258,11 +249,10 @@ class OpenCodeClient:
         await self._request("POST", "/instance/dispose")
 
     async def events(self) -> AsyncIterator[BackendEvent]:
-        """One connection to the event stream. Returns when the server closes it.
+        """Stream events for a single SSE connection and return when the server closes it.
 
-        Reconnecting is the caller's decision: the supervisor needs to resync
-        what it missed while disconnected, which a transparent retry here would
-        hide from it.
+        Reconnection is left to the caller so the supervisor knows to resync
+        any events missed while disconnected.
         """
         path = "/global/event" if self.directory else "/event"
         timeout = httpx.Timeout(None, connect=5.0)

@@ -1,7 +1,6 @@
-"""Terse, phone-width renderings of bridge responses.
+"""Compact plain-text formatters for bridge API responses.
 
-Every command also takes ``--json`` for the raw response, which is what a
-planner should parse. These are for a human on a small screen.
+Each CLI command also supports ``--json`` for machine-readable output.
 """
 
 from __future__ import annotations

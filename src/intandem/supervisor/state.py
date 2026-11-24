@@ -1,9 +1,8 @@
-"""Durable supervisor state, and the lock that keeps one supervisor per task.
+"""Persistent supervisor state and per-task file locking.
 
-The state file is what makes a restart boring. A supervisor that dies and comes
-back under the same spec adopts the session it recorded instead of creating a
-duplicate, and a prompt it may or may not have sent is checked for before it
-is sent again.
+Saving state to disk lets a restarted supervisor reconnect to its existing
+session instead of creating a duplicate, and verify whether pending prompts
+were already delivered before resending them.
 """
 
 from __future__ import annotations
@@ -23,7 +22,7 @@ from pydantic import BaseModel, Field
 
 class SpecStatus(StrEnum):
     PROMPT_PENDING = "prompt_pending"
-    """Session created; the spec prompt may not have reached it yet."""
+    """Session created, but delivery of the spec prompt has not been confirmed yet."""
     ACTIVE = "active"
     RESULT_WRITTEN = "result_written"
     PROTECTED_VIOLATION = "protected_violation"
@@ -32,9 +31,9 @@ class SpecStatus(StrEnum):
 
 class DirectiveAction(StrEnum):
     CORRECT = "CORRECT"
-    """Apply a correction and carry on."""
+    """Apply a correction and continue working."""
     STOP_AND_WAIT = "STOP_AND_WAIT"
-    """Abort the running turn, write a partial result, and wait."""
+    """Abort the active turn, write a partial result, and wait."""
 
 
 class DirectiveRecord(BaseModel):
@@ -43,7 +42,7 @@ class DirectiveRecord(BaseModel):
     text: str
     digest: str
     delivered: bool = False
-    """False until the prompt is accepted; a restart re-checks undelivered ones."""
+    """Set to ``True`` once the prompt is accepted; restarts re-check undelivered directives."""
     retracted: bool = False
     created_at: float = Field(default_factory=time.time)
 
@@ -54,16 +53,16 @@ class SpecRecord(BaseModel):
     text: str
     session_id: str
     model: str | None = None
-    """``provider/model`` for this spec; ``None`` uses the supervisor's default."""
+    """Model in ``provider/model`` format for this spec, or ``None`` for the supervisor default."""
     agent: str | None = None
-    """The OpenCode agent that runs the spec; ``None`` uses OpenCode's default."""
+    """Backend agent/mode name for this spec, or ``None`` for the backend default."""
     status: SpecStatus = SpecStatus.PROMPT_PENDING
     created_at: float = Field(default_factory=time.time)
     last_prompt_at: float = 0.0
-    """Wall time of the latest prompt. Only a result written after it counts."""
+    """Timestamp of the most recent prompt; earlier result files are ignored."""
     protected: dict[str, str] = Field(default_factory=dict[str, str])
     protected_patterns: list[str] | None = None
-    """The globs ``protected`` is a snapshot of; ``None`` in state from before they were kept."""
+    """Glob patterns used to build ``protected``, or ``None`` for legacy state files."""
     directives: dict[str, DirectiveRecord] = Field(default_factory=dict[str, DirectiveRecord])
     lost_sessions: list[str] = Field(default_factory=list[str])
 
@@ -85,16 +84,15 @@ class SupervisorState(BaseModel):
 
 
 class StateError(RuntimeError):
-    """The state file is unreadable or belongs to a different task."""
+    """Raised when the state file is unreadable or belongs to another task directory."""
 
 
 def write_private(path: Path, text: str) -> None:
-    """Atomically replace ``path`` with a 0600 file holding ``text``.
+    """Atomically write ``text`` to ``path`` with 0600 permissions.
 
-    Written to a temporary sibling, fsynced, then renamed over the target, so a
-    crash leaves either the old file or the new one and never half of each.
-    The file is created 0600 before any content exists, because the manifest
-    carries a bearer token.
+    Writes to a sibling temp file created with mode 0600 (important because
+    manifests contain bearer tokens), fsyncs it, and renames it into place so a
+    crash cannot leave a half-written file.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
@@ -137,11 +135,10 @@ class StateStore:
 
 
 class SupervisorLock:
-    """A non-blocking, per-task singleton lock held for the process lifetime.
+    """Non-blocking ``flock`` lock ensuring only one supervisor runs per task directory.
 
-    Two supervisors on one task would each create sessions and deliver every
-    prompt twice. ``flock`` is released by the kernel if the process dies, so a
-    crash never leaves a stale lock behind.
+    The kernel automatically releases the lock if the process crashes, so stale
+    lock files cannot block future runs.
     """
 
     def __init__(self, path: Path) -> None:

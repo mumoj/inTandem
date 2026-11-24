@@ -1,21 +1,17 @@
-"""The supervisor: one immutable spec at a time, each in a fresh implementer session.
+"""Core supervisor coordinating immutable specs, directives, and backend sessions.
 
-The planner talks to this class through the bridge, and the same calls serve a
-human on a phone. Three rules shape it, each learned from a failure:
+Both the planner (via MCP/bridge) and human users (via CLI/dashboard) drive
+this class. Key invariants:
 
-* **A Spec ID is immutable and gets its own session.** Resubmitting the same ID
-  with the same text is a no-op, so a retrying planner cannot duplicate work;
-  the same ID with different text is refused, because a spec that changes
-  under a running session is how two halves of a task end up built against
-  different requirements.
-* **A directive belongs to one spec.** The first version kept directives in a
-  file that outlived the spec they were written for. A leftover CORRECT read as
-  already applied ended a later turn before the implementer had read its new
-  spec. Here a directive names its spec and is refused if that spec is no
-  longer the active one.
-* **The supervisor checks; it does not trust.** A result counts only if it was
-  written after the latest prompt, and protected files are hashed while the
-  spec runs rather than relying on the prompt asking nicely.
+* **Immutable specs, one session per spec.** Resubmitting the same Spec ID with
+  identical parameters is a no-op so planner retries are safe; submitting
+  different text, model, or agent under an existing ID raises ``ConflictError``.
+* **Directives are scoped to the active spec.** Each directive references its
+  target ``spec_id`` and is rejected if that spec is no longer active, avoiding
+  stale instructions leaking into later specs.
+* **Independent verification.** Results are accepted only if written after the
+  latest prompt for the active spec, and protected files are verified by content
+  hash in addition to backend permission guards.
 """
 
 from __future__ import annotations
@@ -72,7 +68,7 @@ _TRANSCRIPT = frozenset({EventType.PART_UPDATED, EventType.PART_DELTA})
 
 
 class SupervisorError(RuntimeError):
-    """A request that conflicts with the supervisor's current state."""
+    """Raised when a request conflicts with the supervisor's current state."""
 
 
 class NoActiveSpecError(SupervisorError):
@@ -85,7 +81,7 @@ class ConflictError(SupervisorError):
 
 
 class WaitReason(StrEnum):
-    """Why ``wait`` returned. Each one asks the planner to do something."""
+    """Reason returned by ``wait`` indicating why the caller should intervene."""
 
     RESULT = "result"
     TURN_ENDED = "turn_ended"
@@ -140,7 +136,7 @@ def digest(text: str) -> str:
 
 
 def safe_name(spec_id: str) -> str:
-    """A filesystem-safe, collision-free name for a spec's files."""
+    """Convert ``spec_id`` into a collision-resistant, filesystem-safe name."""
     stem = re.sub(r"[^A-Za-z0-9._+-]+", "-", spec_id).strip("-.")[:72] or "spec"
     return f"{stem}-{hashlib.sha256(spec_id.encode()).hexdigest()[:10]}"
 
@@ -171,17 +167,16 @@ class Supervisor:
         self.model = model
         self.abort_settle = abort_settle
         self.state = store.load()
-        # Mutations of specs and directives are serialized: two planner retries
-        # racing through submit_spec must not create two sessions.
+        # Serialize spec/directive mutations so concurrent retries cannot create duplicate sessions.
         self._mutex = asyncio.Lock()
         self._changed = asyncio.Condition()
         self._last_activity = Activity.IDLE
         self._observed_model: str | None = None
         self._resync_needed = False
         self.closing = False
-        # Revisions for the live dashboard feed: ``revision`` moves on every
-        # change a waiter could see, the other two only when the transcript or
-        # the working tree may have changed, so the feed refetches just those.
+        # Revision counters for the live dashboard feed: `revision` increments on
+        # any state change, while `message_revision` and `file_revision` track
+        # transcript and working-tree changes so the feed only refetches what changed.
         self.revision = 0
         self.message_revision = 0
         self.file_revision = 0
@@ -189,7 +184,7 @@ class Supervisor:
     # ---- lifecycle ---------------------------------------------------------
 
     async def start(self) -> None:
-        """Resume whatever the state file says was running."""
+        """Resume any active spec recorded in the state file."""
         record = self.state.current
         if record is not None:
             async with self._mutex:
@@ -206,9 +201,9 @@ class Supervisor:
         try:
             await self.api.get_session(record.session_id)
         except NotFoundError:
-            # The server lost the session (its data directory was reset, say).
-            # Work still in flight is redelivered to a new session: the spec,
-            # then its live corrections. Finished work is left for the planner.
+            # The backend no longer has this session (e.g. its data was reset).
+            # For an in-flight spec, create a replacement session and redeliver
+            # the spec and active directives; completed specs are left as-is.
             lost = record.session_id
             record.lost_sessions.append(lost)
             if running:
@@ -232,13 +227,11 @@ class Supervisor:
         await self.resync()
 
     def _reconcile_protected(self, record: SpecRecord) -> None:
-        """Move a resumed spec onto this run's protect list, if its files are intact.
+        """Update a resumed spec's protected-file baseline if the list changed and files are intact.
 
-        A restart may protect different files. Checking the spec against the new
-        list would flag every file only one list covers, so the old files are
-        checked against the old baseline instead. Intact, the spec starts a fresh
-        baseline under the new list. Not intact, the old list stays in force and
-        the files must be restored, as for any violation.
+        Verifies the old baseline first before re-snapshotting with the new
+        patterns. If any previously protected file was modified, the old list is
+        kept so the violation still has to be resolved.
         """
         patterns = list(self.protected.patterns)
         if record.protected_patterns == patterns:
@@ -260,7 +253,7 @@ class Supervisor:
         self._save()
 
     async def begin_shutdown(self) -> None:
-        """Release every ``wait`` so a long poll cannot hold the process open."""
+        """Wake all active ``wait`` calls so long-polling requests do not block shutdown."""
         self.closing = True
         await self._notify_waiters()
 
@@ -297,8 +290,8 @@ class Supervisor:
 
             previous = self.state.current
             if previous is not None:
-                # Otherwise the tampered file would become the next baseline,
-                # and the violation would be quietly accepted.
+                # Refuse to start a new spec over modified protected files, or the
+                # modified contents would silently become the new baseline.
                 self._require_protected_intact(previous)
                 await self._retire(previous)
             session = await self._create_session(spec_id)
@@ -391,7 +384,7 @@ class Supervisor:
         return directive
 
     async def _redeliver_directive(self, record: SpecRecord, directive: DirectiveRecord) -> None:
-        """Finish a delivery a crash interrupted. Only reached from ``_resume``."""
+        """Complete delivery of a directive interrupted by a restart (called from ``_resume``)."""
         marker = directive_marker(directive.directive_id)
         already = await self._session_contains(record.session_id, marker)
         if not already:
@@ -443,12 +436,10 @@ class Supervisor:
         return record
 
     async def _abort_and_settle(self, record: SpecRecord) -> None:
-        """Abort the running turn and wait until its end has been observed.
+        """Abort the active turn and wait for the backend's idle event before continuing.
 
-        An abort's own ``session.idle`` arrives on the stream a moment later.
-        Sending the next prompt before it lands would let that stale idle end
-        the new turn as far as ``wait`` can tell, and the planner would review
-        a turn that has barely started.
+        Sending a new prompt before the aborted turn's ``session.idle`` arrives
+        would cause that delayed idle event to terminate the new turn prematurely.
         """
         was_busy = self.tracker.busy
         await self.api.abort(record.session_id)
@@ -509,7 +500,7 @@ class Supervisor:
             await self._capture_evidence(record)
 
     async def cost(self) -> CostReport:
-        """Spend per spec, read from the backend's own per-session totals."""
+        """Aggregate cost and token usage across all specs from backend session totals."""
         records = list(self.state.specs.values())
 
         async def fetch(record: SpecRecord) -> SpecCost | None:
@@ -558,11 +549,10 @@ class Supervisor:
     # ---- waiting -----------------------------------------------------------
 
     def attention(self) -> Attention | None:
-        """What the planner should act on now, or ``None`` while work goes on.
+        """Return the current condition requiring action, or ``None`` if still working.
 
-        Level-triggered on purpose: it reports the state, not the moment a state
-        was entered, so a ``wait`` can never miss a wakeup that fired between
-        two calls.
+        This check is level-triggered (based on current state rather than edge
+        events) so callers cannot miss notifications between ``wait`` calls.
         """
         if self.closing:
             return Attention(WaitReason.STOPPED, "the supervisor is stopping")
@@ -578,10 +568,9 @@ class Supervisor:
             Activity.IDLE,
             Activity.ERROR,
         ):
-            # A result is reported once the turn is over, not when the file
-            # lands: the model may still be working after writing it, and a
-            # review of a moving target is not a review. A turn that dies after
-            # writing its result still reports the result; the outcome is safe.
+            # Wait until the turn ends before reporting a written result so the
+            # reviewer does not inspect files while the model is still editing.
+            # If the turn errors after writing the result, still report the result.
             result = self.result()
             return Attention(WaitReason.RESULT, result.verdict if result else "")
         match activity:
@@ -619,8 +608,7 @@ class Supervisor:
         return f"no tool for {info.seconds_since_tool}s, no text for {info.seconds_since_text}s"
 
     def _alert_detail(self) -> str:
-        """``_idle_detail`` without commands: alerts leave this machine, and a
-        command can hold a secret that no pattern would reliably catch."""
+        """Like ``_idle_detail``, but omits command arguments that could leak secrets in alerts."""
         info = self.tracker.describe()
         if info.running_tools:
             tools = ", ".join(info.running_tools)
@@ -630,9 +618,9 @@ class Supervisor:
     # ---- event stream ------------------------------------------------------
 
     async def handle_event(self, event: BackendEvent) -> None:
-        """Fold one stream event into the supervisor's view."""
+        """Apply a single backend stream event to supervisor state."""
         if event.type is EventType.CONNECTED:
-            # A (re)connect means replies may have been missed while away.
+            # Reconnecting means permission or question replies may have been missed.
             self._resync_needed = True
         known = set(self.tracker.children)
         self.tracker.observe(event)
@@ -642,7 +630,7 @@ class Supervisor:
         mine = record is not None and event.session_id == record.session_id
         if mine and event.model:
             self._observed_model = event.model
-        # A subagent waiting on a human is the spec waiting on a human.
+        # Include subagent sessions so prompts blocking a subagent escalate to the user.
         ours = record is not None and event.session_id in self.tracker.family
         if record is not None and ours:
             alert = Alert.from_event(event)
@@ -667,20 +655,19 @@ class Supervisor:
         if event.type is EventType.FILE_EDITED or (mine and event.type in TURN_OVER):
             self.file_revision += 1
         if (mine and event.type in TURN_OVER) or event.type is EventType.FILE_EDITED:
-            # Check now rather than on the next tick. A turn that wrote its
-            # result, or tampered with a protected file, just before ending
-            # would otherwise be reported as merely ended.
+            # Run checks immediately rather than waiting for the next poll tick so
+            # a result file or protected-file change right before turn end isn't missed.
             await self._check_current()
         await self._notify_waiters()
 
     async def resync(self) -> None:
-        """Rebuild what the event stream may have missed from the server's own view."""
+        """Reconcile pending prompts and busy state against the backend API."""
         self._resync_needed = False
         record = self.state.current
         if record is None:
             return
         pending, statuses = await asyncio.gather(self.pending(), self.api.session_status())
-        # A subagent started while the stream was down is only known by its parent.
+        # Discover any subagents spawned while disconnected by inspecting their parent_id.
         for session_id in {p.session_id for p in [*pending.permissions, *pending.questions]}:
             if session_id not in self.tracker.family:
                 with contextlib.suppress(BackendError):
@@ -698,7 +685,7 @@ class Supervisor:
     # ---- the monitor ---------------------------------------------------------
 
     async def tick(self) -> None:
-        """One pass of the checks that time, not events, can trigger."""
+        """Run periodic resync, file, and stall checks."""
         if self._resync_needed:
             try:
                 await self.resync()
@@ -709,10 +696,10 @@ class Supervisor:
         await self._notify_waiters()
 
     async def _check_current(self) -> None:
-        """Protected files first, then the result file, for the active spec.
+        """Check protected files and the result file for the active spec.
 
-        Each transition updates the status before its first ``await``, so a
-        tick and an event racing through here act on it once.
+        Status is updated before the first ``await`` in each branch so concurrent
+        ticks and stream events do not process the same transition twice.
         """
         record = self.state.current
         if record is None or record.status is not SpecStatus.ACTIVE:
@@ -806,7 +793,7 @@ class Supervisor:
         return any(marker in message.text() for message in messages)
 
     async def _capture_evidence(self, record: SpecRecord) -> None:
-        """Persist the session's final messages and totals next to the journal."""
+        """Save the session metadata and messages under the task's sessions directory."""
         try:
             session, messages = await asyncio.gather(
                 self.api.get_session(record.session_id), self.api.messages(record.session_id)
@@ -847,12 +834,11 @@ class Supervisor:
             )
 
     async def _guard_subagent(self, session_id: str, inherited: object) -> None:
-        """Forbid a subagent's session to edit protected files.
+        """Apply protected-file restrictions to a newly created subagent session.
 
-        A subagent runs in a session of its own, created by the backend with its
-        agent's policy, not the spec's. ``inherited`` is that policy as the event
-        reported it, or ``None`` for the backend to look up. Should the guard
-        fail, the content hash still catches the edit.
+        Subagents start with their own backend policy rather than the parent
+        spec's guard. If applying the guard fails, periodic hash checks still
+        detect unauthorized edits.
         """
         if not self.protected.patterns:
             return
@@ -866,7 +852,7 @@ class Supervisor:
         )
 
     def _protected_changes(self, record: SpecRecord) -> list[str]:
-        """Protected files changed since ``record``'s baseline, under its own patterns."""
+        """Return protected files modified since ``record``'s baseline."""
         if record.protected_patterns is None:
             return self.protected.entry_changes(record.protected)
         guard = self.protected.with_patterns(tuple(record.protected_patterns))
@@ -881,11 +867,7 @@ class Supervisor:
             self._changed.notify_all()
 
     async def changed(self, since: int, seconds: float) -> int:
-        """Block until ``revision`` moves past ``since``, or ``seconds`` pass.
-
-        Returns the revision now. Shutdown counts as a change, so a live feed
-        waiting here lets the server stop.
-        """
+        """Wait until ``revision`` moves past ``since``, shutdown begins, or ``seconds`` elapse."""
         async with self._changed:
             with contextlib.suppress(TimeoutError):
                 async with asyncio.timeout(seconds):

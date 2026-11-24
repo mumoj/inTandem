@@ -1,12 +1,9 @@
-"""The slice of OpenCode's server API this package reads, in OpenCode's own shape.
+"""Pydantic models for the OpenCode 1.x HTTP API (verified against 1.19.3).
 
-Shapes come from the OpenAPI document ``opencode serve`` publishes at ``/doc``
-(checked against 1.19.3). Every model allows extra fields: OpenCode adds
-properties between minor versions, and a new field should never be what stops
-a supervisor mid-task. Only the fields something here acts on are declared.
-
-Models whose shape matches inTandem's neutral ones are those very classes. The
-rest carry OpenCode's field names; the client converts them at its edge.
+All models allow extra fields so additions in minor OpenCode releases do not
+cause validation failures. Models whose fields already match ``intandem.backend``
+are re-exported directly; the rest use OpenCode's field aliases and are
+converted by ``OpenCodeClient``.
 """
 
 from __future__ import annotations
@@ -57,7 +54,7 @@ class _Model(BaseModel):
 class Session(_Model):
     id: str
     parent_id: str | None = Field(default=None, alias="parentID")
-    """Set on a subagent's session: the session whose ``task`` tool started it."""
+    """Parent session ID when this session was spawned as a subagent."""
     title: str = ""
     cost: float = 0
     tokens: TokenUsage | None = None
@@ -70,11 +67,11 @@ class PermissionAction(StrEnum):
 
 
 class PermissionRule(_Model):
-    """One entry in a session's permission ruleset.
+    """Entry in an OpenCode session permission ruleset.
 
-    OpenCode evaluates the rules in order and the **last** match wins, so a broad
-    rule has to come before the narrow one that overrides it. Verified against
-    1.19.3: ``[ask hello.txt, allow *]`` lets the edit through unasked.
+    OpenCode evaluates rules in order and the last matching rule wins, so broad
+    defaults must precede narrower overrides (e.g. ``allow *`` before
+    ``ask hello.txt``).
     """
 
     permission: str

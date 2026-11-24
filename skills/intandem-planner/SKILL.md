@@ -1,80 +1,69 @@
 ---
 name: intandem-planner
-description: Plan, submit, monitor, and review work delegated to an implementation model (OpenCode, Claude Code or Antigravity) through inTandem. Use when a task is delegated to inTandem, or when asked to check on, unblock, or review that work.
+description: Plan, submit, monitor, and review tasks delegated to an implementer (OpenCode, Claude Code, or Antigravity) via inTandem. Use when delegating implementation work through inTandem or when checking on, unblocking, or reviewing an active session.
 ---
 
-# Planning work with an inTandem implementer
+# Planning work with inTandem
 
-You are responsible for defining the task and accepting the result. The implementer (running on
-OpenCode, Claude Code or Antigravity) writes the code. Give it a bounded specification, monitor its progress,
-and inspect the changes yourself rather than relying on its summary.
+When delegating through inTandem, you define the task specification and review the result while an implementer (OpenCode, Claude Code, or Antigravity) makes the code changes. Keep specifications scoped to a clear outcome, monitor the session for prompts or stalls, and verify the changed files and test output yourself instead of relying on the implementer's summary.
 
-When inTandem's MCP tools are available, use them instead of the CLI commands below. The workflow
-is the same: `submit_spec`, `wait`, `get_result`, `get_pending`, `reply_permission`,
-`answer_question`, `send_directive`, and `finish` map to `spec`, `wait`, `result` and `diff`,
-`pending`, `allow`/`deny`, `answer`, `directive`, and `finish`. Share the `dashboard` link from
-the first reply (or the `overview` link for parallel implementers) with the person overseeing the
-task.
+Prefer the inTandem MCP tools over the CLI whenever they are available. Both expose the same workflow:
 
-## Choosing a harness and model
+- `submit_spec` -> `inTandem spec`
+- `wait` -> `inTandem wait`
+- `get_result` -> `inTandem result` and `inTandem diff`
+- `get_pending` -> `inTandem pending`
+- `reply_permission` -> `inTandem allow` / `inTandem deny`
+- `answer_question` -> `inTandem answer`
+- `send_directive` -> `inTandem directive`
+- `finish` -> `inTandem finish`
 
-- Default harness is `opencode` (1.x or 2.x). Pass `harness="claude"` on `start_implementer`,
-  `spawn_implementer`, or `submit_spec` to run Claude Code on the user's subscription login, or
-  `harness="antigravity"` to run the Antigravity CLI (`agy`) on its own sign-in.
-- Use `list_models()` (or `list_models(harness="claude")` / `list_models(harness="antigravity")`)
-  to see available models and agents.
-- OpenCode takes `provider/model` and optional `agent` (e.g. `build`, `plan`). Claude Code takes
-  bare model names (e.g. `claude-sonnet-4-6`) or `anthropic/<model>`, and no `agent`. Antigravity
-  takes bare agy model IDs (e.g. `gemini-4-neon-high`) or `antigravity/<model>`, and `agent` is
-  its mode (`default`, `accept-edits`, `auto`, `plan`).
+Pass the `dashboard` URL from the first response (or the `overview` URL when running multiple implementers in parallel) to the user so they can monitor progress in a browser.
 
-## Workflow
+## Selecting a harness and model
 
-1. **Write the specification.** State one outcome, the files it may change, and how to verify
-   completion. Make requirements precise and consistent; contradictory requirements often appear
-   as a reasoning stall rather than a clear error.
-2. **Submit it.** `submit_spec` (or `inTandem spec S-<n> --file spec.md`). Spec IDs are
-   immutable; a changed requirement is a new ID. For independent pieces of work, use
-   `spawn_implementer` once per piece and wait with `wait_any`.
-3. **Wait for a state change.** Call `wait` (or `inTandem wait --timeout 900`) and branch on the
-   reason / exit code:
+- The default harness is `opencode` (1.x or 2.x). To use another harness, pass `harness="claude"` (runs Claude Code using the local CLI login) or `harness="antigravity"` (runs `agy` using its sign-in) to `start_implementer`, `spawn_implementer`, or `submit_spec`.
+- Call `list_models()` (optionally passing `harness="claude"` or `harness="antigravity"`) to check available models and agents.
+- Model and agent formats by harness:
+  - **OpenCode**: `provider/model` and an optional `agent` (such as `build` or `plan`).
+  - **Claude Code**: a bare model name (such as `claude-sonnet-4-6`) or `anthropic/<model>`, with `agent` unset.
+  - **Antigravity**: a bare `agy` model ID (such as `gemini-4-neon-high`) or `antigravity/<model>`, with `agent` set to an `agy` mode (`default`, `accept-edits`, `auto`, or `plan`).
 
-   | exit | meaning | next |
-   |---|---|---|
-   | 0 `result` | it wrote a result and the turn is over | step 4 |
-   | 0 `turn_ended` | it stopped without a result | `get_messages` / `inTandem msg 3`, then `say` or a directive |
-   | 5 `blocked` | a permission or question is pending | `get_pending` / `inTandem pending`, then decide |
-   | 8 `reasoning_stall` | thinking, not acting | `get_messages`; look for a contradiction in your spec |
-   | 4 `hung` | nothing arriving | `status`; abort and re-prompt if it is stuck |
-   | 6 | provider error or protected file changed | `status`, `inTandem log 20` |
-   | 124 | still working | wait again |
+## Standard loop
 
-4. **Review the changes.** `get_result` (or `inTandem result --json` + `inTandem diff`) reports
-   the implementer's claim and changed files. Read the files and run the relevant checks yourself
-   before accepting it.
-5. **Correct, continue, or land.** For a correction to the active spec, send a `CORRECT` directive
-   (`send_directive` / `inTandem directive S-<n> D-<m> correct ...`). If the requirement itself is
-   wrong, stop the spec (`STOP_AND_WAIT`) and submit a new spec ID. For parallel worktrees, use
-   `land_implementer` (`review`, then `merge` or `discard`).
+1. Write a specification covering a single outcome, which files may be modified, and how to verify completion. Make sure the requirements do not contradict each other, since contradictions often show up as reasoning stalls rather than explicit errors.
+2. Submit the spec with `submit_spec` (or `inTandem spec S-<n> --file spec.md`). Spec IDs are immutable, so use a new ID whenever requirements change. For independent pieces of work, start separate worktrees with `spawn_implementer` and monitor them together using `wait_any`.
+3. Call `wait` (or `inTandem wait --timeout 900`) and handle the returned reason or exit code:
 
-## Resolve blocked work
+   | Exit code / reason | Meaning | Next step |
+   | --- | --- | --- |
+   | `0` `result` | Result file written and turn completed | Proceed to step 4 |
+   | `0` `turn_ended` | Turn ended without writing a result file | Inspect `get_messages` (`inTandem msg 3`), then send `say` or a directive |
+   | `5` `blocked` | Pending permission request or question | Check `get_pending` (`inTandem pending`) and reply |
+   | `8` `reasoning_stall` | Emitting text without calling tools | Read `get_messages` and check the spec for ambiguity or contradictions |
+   | `4` `hung` | No text or tool activity | Check `status`; abort and re-prompt if stuck |
+   | `6` | Provider error or protected file modified | Check `status` and `inTandem log 20` |
+   | `124` | Timed out while still working | Call `wait` again |
 
-- `reply_permission("allow")` / `inTandem allow` grants one requested permission. Prefer it over
-  `always` when the permission should not apply to the entire session.
-- `reply_permission("deny", message="why")` / `inTandem deny --message "why"` rejects a request
-  and sends the reason back to the implementer.
-- `answer_question` / `inTandem answer <label>` selects an option for a pending question.
-- Never allow an edit to a protected file; deny it and choose a different approach.
+4. Inspect the result with `get_result` (or `inTandem result --json` and `inTandem diff`). Read the modified files and run the relevant checks yourself before accepting the work.
+5. Follow up based on the review:
+   - To fix an issue within the same spec, send a `CORRECT` directive via `send_directive` (`inTandem directive S-<n> D-<m> correct ...`).
+   - If the requirements themselves changed, stop the active spec (`STOP_AND_WAIT`) and submit a new spec ID.
+   - For parallel worktrees, use `land_implementer` with `review` first, then `merge` or `discard`.
 
-## Respond to a reasoning stall
+## Handling blocked requests
 
-Read the latest messages before restarting the work. A reasoning stall often indicates an
-unclear or contradictory requirement. Clarify the specification or send a directive when that is
-the cause; restarting without changing the context usually repeats the same problem.
+- Use `reply_permission("allow")` (`inTandem allow`) for one-off approvals; only use `always` when the permission should remain granted for the rest of the session.
+- Use `reply_permission("deny", message="...")` (`inTandem deny --message "..."`) to reject a request and explain why to the implementer.
+- Use `answer_question` (`inTandem answer <label>`) to select an option for a pending question.
+- Do not approve edits to protected files; deny the request and direct the implementer to another approach.
 
-## Working boundaries
+## Handling reasoning stalls
 
-- Do not edit protected files to make the implementer's work pass.
-- Include command output in reviews rather than paraphrasing it.
-- Call `finish` / `inTandem finish` when the task is complete so the session records its final
-  evidence.
+Read the recent messages before aborting or restarting. A reasoning stall usually means the specification is underspecified or self-contradictory. Clarify the spec or send a corrective directive instead of simply retrying with the same prompt.
+
+## Notes
+
+- Never edit protected files yourself to make the implementer's changes pass.
+- Include actual command output in reviews rather than summarizing it.
+- Call `finish` (`inTandem finish`) once the task is complete so the supervisor saves final session logs and shuts down cleanly.

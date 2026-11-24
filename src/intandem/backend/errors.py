@@ -1,11 +1,11 @@
-"""What can go wrong talking to an implementer backend, whichever harness it is."""
+"""Exceptions raised by implementer backends."""
 
 from __future__ import annotations
 
 
 class BackendError(RuntimeError):
-    """The backend answered with an error, or could not be reached at all."""
+    """Raised when a backend returns an error or cannot be reached."""
 
 
 class NotFoundError(BackendError):
-    """The session, permission or question no longer exists."""
+    """Raised when a session, permission request, or question no longer exists."""

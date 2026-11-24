@@ -1,17 +1,17 @@
-"""One supervised task: build every part, run its workers, stop them together.
+"""Runtime wiring for a single supervised task.
 
-A task has no server of its own. ``open_task`` builds its supervisor and bridge
-app, attached to its harness backend (the hub's shared OpenCode 1.x/2.x server,
-a Claude Code backend or an Antigravity ACP backend), and the hub mounts the app
-beside the others. Its workers run in one process, on the hub's event loop,
-under one ``TaskGroup``:
+Tasks do not run their own HTTP servers. ``open_task`` constructs a task's
+supervisor, bridge FastAPI app, and harness backend (the shared OpenCode
+1.x/2.x server, Claude Code, or Antigravity ACP), which the hub mounts under
+its own server. Background workers run on the hub's event loop inside one
+``TaskGroup``:
 
-* the event pump (the backend's stream into the supervisor),
-* the monitor (result file, protected files, stall checks on a timer), and
-* the host watch (stops the task once the backend stops answering).
+* the event pump (forwards backend events to the supervisor),
+* the monitor (periodically checks the result file, protected files, and stalls),
+* the host watcher (stops the task if the backend stops responding).
 
-If any of them dies unexpectedly the group cancels the rest, and the exit
-stack below closes the backend and releases the lock on the way out.
+If any worker raises an unexpected error, the task group cancels the others and
+the exit stack closes the backend and releases the task lock.
 """
 
 from __future__ import annotations
@@ -46,7 +46,7 @@ from intandem.supervisor.supervisor import Supervisor
 
 log = logging.getLogger(__name__)
 
-# Events worth flushing the recorder for immediately; the rest are batched.
+# Flush the stream log immediately on these events; batch flushes for others.
 _FLUSH_ON = frozenset(
     {"permission.asked", "question.asked", "session.error", "session.idle", "server.connected"}
 )
@@ -59,7 +59,7 @@ async def pump_events(
     *,
     max_delay: float = 30.0,
 ) -> None:
-    """Feed the event stream to the supervisor, reconnecting with backoff, forever."""
+    """Forward backend events to the supervisor, reconnecting with exponential backoff."""
     delay = 1.0
     while True:
         try:
@@ -69,9 +69,8 @@ async def pump_events(
                 try:
                     await supervisor.handle_event(event)
                 except Exception:
-                    # A bug in one handler must not stop the stream being read:
-                    # everything downstream, including the next failure report,
-                    # would wait behind it.
+                    # Keep reading the stream even if handling a single event fails,
+                    # otherwise subsequent events and failure reports would stall.
                     log.exception("event handler failed on %s", event.type)
             supervisor.journal.append("stream_closed")
         except BackendError as exc:
@@ -81,16 +80,16 @@ async def pump_events(
 
 
 OpenCodeBackend = OpenCodeClient | OpenCode2Client
-"""A client for whichever OpenCode major the shared server runs."""
+"""Client type for whichever OpenCode major version the shared server is running."""
 
 
 async def _connect(
     stack: contextlib.AsyncExitStack, settings: Settings
 ) -> tuple[OpenCodeLogin, OpenCodeBackend, Version]:
-    """A client for the shared OpenCode server, scoped to this task's directory.
+    """Connect to the shared OpenCode server for this task's directory.
 
-    The server's own report decides which API to speak, so a host upgraded
-    from 1.x to 2.x between two runs is driven correctly by the next one.
+    Probes the server's reported version to pick the 1.x or 2.x client so
+    upgrading OpenCode between runs works without changing configuration.
     """
     if not (settings.opencode_url and settings.opencode_password):
         raise ValueError("a task needs the shared OpenCode server: opencode_url and its password")
@@ -110,7 +109,7 @@ async def _connect(
         client = await stack.enter_async_context(
             OpenCodeClient(settings.opencode_url, password, directory=directory)
         )
-    # Free this task's instance on the way out; the server is not ours to stop.
+    # Dispose only this task's instance on exit; the hub owns the shared server.
     stack.push_async_callback(_dispose, client)
     return OpenCodeLogin(settings.opencode_url, password), client, version
 
@@ -118,26 +117,27 @@ async def _connect(
 async def make_backend(
     stack: contextlib.AsyncExitStack, settings: Settings
 ) -> tuple[ImplementerBackend, OpenCodeLogin | None, Version | None]:
-    """The task's implementer backend for ``settings.harness``, plus OpenCode's login and version.
+    """Create the implementer backend configured by ``settings.harness``.
 
-    The claude harness runs a ``claude`` CLI per session, and the antigravity
-    harness one ``agy acp`` per task. Neither needs the shared server, so they
-    have no OpenCode login or version to hand the dashboard.
+    Returns the backend along with the OpenCode login and version when using
+    OpenCode, or ``None`` for harnesses that run their own CLI directly
+    (``claude`` runs a ``claude`` process per session; ``antigravity`` runs one
+    ``agy acp`` process per task).
     """
     if settings.harness == "claude":
-        # Imported here: the claude extra is optional.
+        # Lazy import because the claude extra is optional.
         from intandem.claude.backend import ClaudeCodeBackend
 
         backend = ClaudeCodeBackend(settings.task_dir, cli=settings.claude_bin)
         await stack.enter_async_context(backend)
-        await backend.health()  # No CLI on PATH fails the start, not the first spec.
+        await backend.health()  # Fail at startup if the CLI is missing.
         return backend, None, None
     if settings.harness == "antigravity":
         from intandem.antigravity.backend import AntigravityBackend
 
         antigravity = AntigravityBackend(settings.task_dir, cli=settings.antigravity_bin)
         await stack.enter_async_context(antigravity)
-        await antigravity.health()  # Starts `agy acp`: a missing or dead CLI fails the start.
+        await antigravity.health()  # Starts `agy acp` so a missing or broken CLI fails early.
         return antigravity, None, None
     login, client, version = await _connect(stack, settings)
     return client, login, version
@@ -151,10 +151,10 @@ async def _dispose(client: OpenCodeBackend) -> None:
 async def watch_host(
     client: ImplementerBackend, journal: Journal, *, interval: float = 5.0, misses: int = 3
 ) -> None:
-    """Return once the backend stops answering, which stops this supervisor.
+    """Exit after consecutive failed health checks so the task shuts down cleanly.
 
-    Without its backend a supervisor can only fail, so it stops cleanly instead,
-    and resumes from its state file when it is next started.
+    Stopping cleanly allows the supervisor to resume from its state file the
+    next time the task is started.
     """
     missed = 0
     while missed < misses:
@@ -169,10 +169,7 @@ async def watch_host(
 
 @dataclass
 class Task:
-    """One supervised task: its supervisor, its workers and its bridge app.
-
-    It has no server of its own: the hub mounts its app beside the others.
-    """
+    """Holds a supervised task's supervisor, workers, and FastAPI bridge app."""
 
     settings: Settings
     paths: TaskPaths
@@ -181,7 +178,7 @@ class Task:
     recorder: StreamRecorder
     app: FastAPI
     login: OpenCodeLogin | None
-    """``None`` for a harness with no OpenCode server, such as claude."""
+    """``None`` for harnesses that do not use an OpenCode server."""
     version: Version | None
     stop: asyncio.Event
 
@@ -203,10 +200,10 @@ class Task:
         )
 
     async def run_workers(self) -> None:
-        """Pump events and run the monitor until ``stop``, then begin shutting down.
+        """Run the event pump, monitor, and host watcher until ``stop`` is set.
 
-        A worker that dies takes the others with it: its exception leaves the
-        task group, as it should, rather than leaving a supervisor half alive.
+        If any worker fails with an exception, the task group cancels the
+        remaining workers and propagates the error.
         """
         try:
             async with asyncio.TaskGroup() as group:
@@ -220,13 +217,13 @@ class Task:
                 for task in (stopping, *workers):
                     task.cancel()
         finally:
-            # Here, not in the group: a crashed worker cancels the group's body.
+            # Run outside the TaskGroup because a worker crash cancels the group body.
             await self.supervisor.begin_shutdown()
 
 
 @contextlib.asynccontextmanager
 async def open_task(settings: Settings, *, token: str) -> AsyncGenerator[Task]:
-    """Build every part of one task; on exit, stop them and capture evidence."""
+    """Initialize a task's backend, supervisor, and bridge app, cleaning up on exit."""
     paths = TaskPaths.for_task(settings.state_root, settings.task_dir)
     paths.ensure()
     with SupervisorLock(paths.lock):

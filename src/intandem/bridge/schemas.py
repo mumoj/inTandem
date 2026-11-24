@@ -1,8 +1,7 @@
-"""Request and response bodies for the bridge.
+"""Pydantic request and response schemas for the bridge HTTP API.
 
-Validation lives here, in types, rather than in hand-written checks inside each
-handler. An id that could carry a path separator into an OpenCode URL is
-rejected by its pattern before any handler runs.
+Input constraints (such as restricting IDs to path-safe characters) are enforced
+at the schema layer before route handlers run.
 """
 
 from __future__ import annotations
@@ -25,13 +24,12 @@ def _not_blank(value: str) -> str:
 
 
 Identifier = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:+-]{0,127}$")]
-"""A Spec or directive id: readable, bounded, and safe in a file name."""
+"""Identifier for specs and directives; restricted to filename-safe characters."""
 
 Text = Annotated[str, StringConstraints(max_length=60_000), AfterValidator(_not_blank)]
 
-# Request ids come from whichever backend is running (OpenCode 1.x ``per_``/``que_``,
-# 2.x ``frm_``, Claude Code, Codex JSON-RPC). Keeping them to path-safe tokens stops
-# a caller-supplied id from reaching any backend as a path fragment.
+# Restrict backend request IDs (e.g. OpenCode `per_`/`que_`/`frm_`, Claude, ACP)
+# to path-safe characters so caller-supplied IDs cannot inject URL path segments.
 PermissionId = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")]
 QuestionId = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")]
 
@@ -113,11 +111,11 @@ class WaitOut(BaseModel):
 
 
 class OverviewOut(BaseModel):
-    """Everything the dashboard redraws on each poll, in one round trip."""
+    """Combined status, attention reason, and pending prompts returned to the dashboard."""
 
     status: StatusReport
     attention: WaitReason | None
-    """What ``wait`` would return right now; ``None`` while the implementer works."""
+    """Current reason ``wait`` would return, or ``None`` while working."""
     attention_detail: str
     pending: Pending
 
@@ -125,7 +123,7 @@ class OverviewOut(BaseModel):
 class JournalOut(BaseModel):
     entries: list[dict[str, Any]]
     next: int
-    """Pass back as ``after`` to read only what was appended since."""
+    """Byte offset to pass as ``after`` to fetch only newly appended entries."""
 
 
 class OpenCodeOut(BaseModel):
@@ -198,7 +196,7 @@ class ToolCallOut(BaseModel):
 
 
 class MessageOut(BaseModel):
-    """A message flattened for reading on a small screen, with optional full tool calls."""
+    """Simplified message view for CLI and dashboard display, including tool call details."""
 
     role: str
     text: str

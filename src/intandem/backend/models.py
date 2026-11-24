@@ -1,9 +1,8 @@
-"""The data inTandem reads from an implementer backend, in its own field names.
+"""Normalized data models returned by implementer backends.
 
-A backend adapter parses its harness's wire format and hands back these
-models. Only the fields something in inTandem acts on are declared. Every model
-allows extra fields, so an adapter can keep what its harness sent beside them
-for the evidence it records.
+Adapters parse their harness wire formats into these Pydantic models. Only the
+fields used by inTandem are explicitly typed; ``extra="allow"`` preserves
+additional backend-specific fields for session logs.
 """
 
 from __future__ import annotations
@@ -37,14 +36,14 @@ class TokenUsage(_Model):
 class Session(_Model):
     id: str
     parent_id: str | None = None
-    """Set on a subagent's session: the session that started it."""
+    """Parent session ID when this session belongs to a subagent."""
     title: str = ""
     cost: float = 0
     tokens: TokenUsage | None = None
 
 
 class SessionStatus(_Model):
-    """``idle``, ``busy`` or ``retry``. Kept open in case a backend adds one."""
+    """Session state (typically ``idle``, ``busy``, or ``retry``)."""
 
     type: str
     attempt: int | None = None
@@ -111,12 +110,12 @@ class Message(_Model):
     parts: list[Part] = Field(default_factory=list[Part])
 
     def text(self) -> str:
-        """The message's visible text, joined across its text parts."""
+        """Join all non-empty text parts of this message."""
         return "\n".join(part.text for part in self.parts if part.type == "text" and part.text)
 
 
 class ModelRef(_Model):
-    """A model choice, optionally qualified as ``provider/model``."""
+    """Model identifier, optionally qualified as ``provider/model``."""
 
     provider_id: str | None = None
     model_id: str

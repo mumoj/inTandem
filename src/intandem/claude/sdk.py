@@ -1,10 +1,4 @@
-"""The parts of the Claude Agent SDK the backend touches, loaded only when used.
-
-``claude-agent-sdk`` is an optional extra. ``require_sdk`` is the one place that
-checks for it, and turns a missing install into an error that says what to do.
-``SDKClient`` is the slice of ``ClaudeSDKClient`` the backend calls, so tests
-can hand it a fake.
-"""
+"""Lazy loader and minimal client protocol for the optional ``claude-agent-sdk`` extra."""
 
 from __future__ import annotations
 
@@ -32,11 +26,7 @@ def require_sdk() -> None:
 
 
 def api_key_warning() -> str | None:
-    """Why this run may bill the API instead of the user's subscription, if it may.
-
-    The CLI prefers ``ANTHROPIC_API_KEY`` to the subscription login when the key
-    is set. inTandem never sets or needs it; it only says so.
-    """
+    """Warn if ``ANTHROPIC_API_KEY`` is set, since ``claude`` prefers it over subscription auth."""
     if os.environ.get("ANTHROPIC_API_KEY"):
         return (
             "ANTHROPIC_API_KEY is set, so the claude CLI bills its requests to that API "
@@ -46,7 +36,7 @@ def api_key_warning() -> str | None:
 
 
 class SDKClient(Protocol):
-    """What the backend calls on ``claude_agent_sdk.ClaudeSDKClient``."""
+    """Subset of ``claude_agent_sdk.ClaudeSDKClient`` used by ``ClaudeCodeBackend``."""
 
     async def connect(self) -> None: ...
 

@@ -1,12 +1,8 @@
-"""The implementer's machine-readable result.
+"""Parsing and validation for the implementer's JSON result file.
 
-The first version asked the model to append a Markdown heading, ``## Agent
-Result (Iteration N)``, and matched it with a regex. The model wrote ``## Agent
-Result — <spec-id>`` instead, which is the natural wording, the regex missed it,
-and the miss looked like a corrupt channel. A structured signal belongs in a
-structured file. It is also written as the work happens rather than composed at
-the end of the turn, so a provider failure on the last generation does not lose
-the outcome.
+Implementers write a structured JSON file as soon as the outcome is known rather
+than relying on regexes over free-form markdown output, so formatting variations
+or late generation failures do not hide the result.
 """
 
 from __future__ import annotations
@@ -25,15 +21,14 @@ class ImplementerResult(BaseModel):
 
 
 def read_result(path: Path, spec_id: str) -> ImplementerResult | None:
-    """The result for ``spec_id``, or ``None`` when it cannot be trusted yet.
+    """Read and validate the result file for ``spec_id``, returning ``None`` if not ready.
 
-    Absent, mid-write, malformed, or naming another spec are all normal states
-    on the way to a real result, and the next monitor tick tries again, so none
-    of them is an error.
+    Missing, partially written, malformed, or mismatched files return ``None``
+    so the monitor can retry on the next tick.
     """
     try:
         result = ImplementerResult.model_validate_json(path.read_bytes())
     except (OSError, ValidationError):
         return None
-    # A result left by an earlier spec must not end this one.
+    # Ignore results left behind by an earlier spec.
     return result if result.spec_id == spec_id else None

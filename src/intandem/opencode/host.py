@@ -1,14 +1,12 @@
-"""One ``opencode serve`` shared by every implementer of a planner session.
+"""Manages a shared ``opencode serve`` process for a hub or MCP session.
 
-Starting OpenCode costs seconds and hundreds of megabytes, so ``inTandem mcp``
-starts one when the planner connects and every supervisor it spawns attaches to
-it, each scoped to its own directory. The host lives exactly as long as the MCP
-connection: it is stopped when the planner disconnects, and on Linux the kernel
-stops it too should the MCP server die without cleaning up.
+Starting OpenCode takes several seconds and significant memory, so a single
+server is shared across all OpenCode tasks in a session (each scoped to its own
+directory). It is stopped on shutdown, and on Linux ``PR_SET_PDEATHSIG`` ensures
+the kernel terminates it if the parent exits unexpectedly.
 
-This side is synchronous on purpose. It is driven from the MCP server's worker
-threads and its lifespan, and a plain process with a readiness flag is simpler
-to reason about there than an event loop of its own.
+This module uses synchronous subprocess and threading primitives because it is
+invoked from both MCP worker threads and lifespan hooks.
 """
 
 from __future__ import annotations
@@ -35,22 +33,22 @@ _PR_SET_PDEATHSIG = 1
 
 
 class HostError(RuntimeError):
-    """The shared server failed to start, or stopped."""
+    """Raised when the shared OpenCode server fails to start or exits."""
 
 
 def _die_with_parent() -> None:  # pragma: no cover - runs in the child
-    """Have the kernel send SIGTERM if the process that started us dies."""
+    """Ask the Linux kernel to send SIGTERM if the parent thread exits."""
     libc = ctypes.CDLL(None, use_errno=True)
     libc.prctl(_PR_SET_PDEATHSIG, signal.SIGTERM)
 
 
 @dataclass
 class SharedHost:
-    """An ``opencode serve`` on loopback for several directories at once.
+    """Manages a loopback ``opencode serve`` process shared across task directories.
 
-    ``start`` returns at once; ``wait_ready`` blocks until it answers. A record
-    of the host, written 0600 under ``records``, lets a later session find and
-    stop a host whose owner died without stopping it.
+    ``start()`` spawns the process asynchronously and ``wait_ready()`` blocks
+    until its health endpoint responds. A 0600 JSON record is written under
+    ``records`` so later runs can clean up orphaned servers.
     """
 
     binary: str
@@ -73,14 +71,14 @@ class SharedHost:
         return self.records / f"{os.getpid()}.json"
 
     def start(self, *, die_with_parent: bool = True) -> None:
-        """Launch the server and return at once.
+        """Spawn ``opencode serve`` and start polling its health endpoint in a daemon thread.
 
-        ``die_with_parent`` asks the kernel to stop the server with the thread
-        that starts it, which is only right from a thread that lives as long as
-        the owning process: its main thread.
+        ``die_with_parent`` binds child lifetime to the calling thread via
+        ``PR_SET_PDEATHSIG``, so it should only be enabled from a long-lived
+        thread (such as the main thread).
         """
         self.log_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        # 1.x reads OPENCODE_SERVER_PASSWORD, 2.x prefers OPENCODE_PASSWORD.
+        # OpenCode 1.x reads OPENCODE_SERVER_PASSWORD; 2.x reads OPENCODE_PASSWORD.
         env = {
             **os.environ,
             "OPENCODE_SERVER_PASSWORD": self.password,
@@ -96,8 +94,7 @@ class SharedHost:
                 stdin=subprocess.DEVNULL,
                 stdout=log,
                 stderr=log,
-                # Runs between fork and exec, where only async-signal-safe calls
-                # belong. prctl is one: it takes no locks the parent might hold.
+                # prctl is async-signal-safe between fork and exec.
                 preexec_fn=on_fork,
             )
         write_private(
@@ -129,7 +126,7 @@ class SharedHost:
         self._ready.set()
 
     def wait_ready(self, timeout: float) -> None:
-        """Block until the host answers, or raise why it will not."""
+        """Block until the server is ready, or raise ``HostError`` on timeout or failure."""
         if not self._ready.wait(timeout):
             raise HostError(f"the shared OpenCode server is still starting; see {self.log_path}")
         if self._failure is not None:
@@ -163,11 +160,7 @@ class SharedHost:
 
 
 def reap_orphans(records: Path) -> list[int]:
-    """Stop hosts whose owner died without stopping them. Returns their pids.
-
-    The kernel does this on Linux; elsewhere, or for a host from before that,
-    the next session tidies up.
-    """
+    """Terminate any recorded OpenCode servers whose owner process is gone, returning their PIDs."""
     reaped: list[int] = []
     for path in records.glob("*.json"):
         try:
@@ -197,9 +190,9 @@ def _alive(pid: int) -> bool:
 
 
 def _is_opencode(pid: int) -> bool:
-    """Guard against a recycled pid: only ever signal an ``opencode serve``."""
+    """Verify ``pid`` is actually an ``opencode serve`` process in case the PID was recycled."""
     try:
         cmdline = Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")
     except OSError:
-        return sys.platform != "linux"  # no /proc to check: trust the record
+        return sys.platform != "linux"  # Without /proc, fall back to trusting the record.
     return any(part.endswith(b"opencode") for part in cmdline) and b"serve" in cmdline

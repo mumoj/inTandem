@@ -1,16 +1,14 @@
-"""A typed async client for the OpenCode 2.x server API.
+"""Async HTTP/SSE client for the OpenCode 2.x server API.
 
-What changed from 1.x, as far as inTandem is concerned:
-
-* Routes live under ``/api``. Most answers wrap their payload in ``data``.
-* A request names its directory as ``location[directory]``, and a session
-  remembers the location it was created in.
-* A prompt carries only text: the model and the agent are switched on the
-  session first.
-* Questions are forms. A question's options are a field's options, and an
-  answer is keyed by field.
-* Replying to a permission or a form needs its session as well as its id, so
-  the client remembers which session each pending request belongs to.
+Key differences from OpenCode 1.x:
+* Routes are under ``/api`` and typically wrap payloads in a ``data`` field.
+* Requests scope to a directory via ``location[directory]``, which sessions
+  retain after creation.
+* Prompts send only text; model and agent changes are posted to separate
+  session endpoints first.
+* Questions are represented as forms whose answers are keyed by field.
+* Permission and form replies require a session ID, so the client caches the
+  session ID for each pending request.
 """
 
 from __future__ import annotations
@@ -50,7 +48,7 @@ _MAX_PAGES = 50
 
 
 class OpenCode2Client:
-    """HTTP access to one OpenCode 2 ``opencode serve``, scoped to one directory."""
+    """Async HTTP client for an OpenCode 2.x server, scoped to a single directory."""
 
     def __init__(
         self,
@@ -64,7 +62,7 @@ class OpenCode2Client:
     ) -> None:
         self.directory = directory
         self._location = {"location[directory]": directory}
-        # 2.x always names its user "opencode"; the username is not configurable.
+        # OpenCode 2.x hardcodes the Basic auth username to "opencode".
         self._http = httpx.AsyncClient(
             base_url=base_url,
             auth=("opencode", password),
@@ -133,13 +131,13 @@ class OpenCode2Client:
         await self._request("PATCH", f"/api/session/{session_id}", json=body)
 
     async def session_status(self) -> dict[str, SessionStatus]:
-        """Busy sessions only: 2.x lists the running ones, and the rest are idle."""
+        """Return currently active (busy) sessions; OpenCode 2.x omits idle sessions."""
         active = await self._data("GET", "/api/session/active", params=self._location)
         running = cast(dict[str, object], active) if isinstance(active, dict) else {}
         return {session_id: SessionStatus(type="busy") for session_id in running}
 
     async def messages(self, session_id: str, limit: int | None = None) -> list[Message]:
-        """User and assistant messages, oldest first. ``limit`` keeps the newest."""
+        """Return user and assistant messages in chronological order (newest ``limit`` if set)."""
         found: list[dict[str, Any]] = []
         params: dict[str, Any] = {"order": "desc"}
         for _ in range(_MAX_PAGES):
@@ -160,7 +158,7 @@ class OpenCode2Client:
     async def prompt(
         self, session_id: str, text: str, model: ModelRef | None, agent: str | None = None
     ) -> None:
-        """Queue a prompt and return at once, switching model and agent first."""
+        """Apply optional model and agent updates, then queue the prompt asynchronously."""
         base = f"/api/session/{session_id}"
         if model is not None:
             if model.provider_id is None:
@@ -215,7 +213,7 @@ class OpenCode2Client:
         return out
 
     async def reply_question(self, request_id: str, answers: list[list[str]]) -> bool:
-        """Answer a form by option labels, one list per field, as 1.x questions were."""
+        """Submit form answers mapped from option labels (one list per field)."""
         session_id = await self._session_of(request_id, questions=True)
         answer = _answer(self._forms.get(request_id, {}), answers)
         await self._request(
@@ -233,7 +231,7 @@ class OpenCode2Client:
         return True
 
     async def diff(self, session_id: str) -> list[FileDiff]:
-        """What the session changed, one summary per file. The patch text is dropped."""
+        """Return per-file diff summaries for ``session_id`` without patch text."""
         diffs = await self._data("GET", f"/api/session/{session_id}/diff")
         return [
             FileDiff(
@@ -246,13 +244,13 @@ class OpenCode2Client:
         ]
 
     async def dispose(self) -> None:
-        """Nothing to free: 2.x keeps no per-directory instance to dispose of."""
+        """No-op because OpenCode 2.x does not manage per-directory server instances."""
 
     async def events(self) -> AsyncIterator[BackendEvent]:
-        """One connection to the server-wide stream, filtered to this directory.
+        """Stream server events filtered to ``self.directory``.
 
-        Events without a location (execution, usage, ``server.connected``)
-        are kept: the supervisor already ignores sessions that are not its own.
+        Events without a location field (e.g. ``server.connected`` or execution
+        events) are forwarded because the supervisor filters by session ID.
         """
         path = "/api/event"
         translator = Translator()
@@ -308,7 +306,7 @@ def _session(data: object) -> Session:
             "title": str(dig(info, "metadata", "title") or info.get("title") or ""),
             "cost": float(info.get("cost") or 0),
             "tokens": TokenUsage.model_validate(tokens) if isinstance(tokens, dict) else None,
-            # Kept under the name 1.x used, so evidence reads the same.
+            # Store under OpenCode 1.x's key name so session captures stay consistent.
             "permission": info.get("permissions"),
         }
     )
@@ -352,7 +350,7 @@ def _permission(data: object) -> PermissionRequest:
     patches = [dig_str(f, "patch") for f in dig_list(native, "files")]
     extra: dict[str, Any] = {}
     if any(patches):
-        # The dashboard shows ``metadata.diff``, the name 1.x gave the patch.
+        # Expose combined patches under `metadata.diff`, matching OpenCode 1.x for the dashboard.
         extra["diff"] = "\n".join(p for p in patches if p)
     return PermissionRequest(
         id=dig_str(data, "id") or "",
@@ -389,7 +387,7 @@ def _question(form: dict[str, Any]) -> QuestionRequest:
 
 
 def _answer(form: dict[str, Any], answers: list[list[str]]) -> dict[str, Any]:
-    """Labels per field as the form's answer: an option's value, keyed by field."""
+    """Map per-field option labels into the ``{field_key: value}`` payload for OpenCode 2."""
     answer: dict[str, Any] = {}
     for field, labels in zip(dig_list(form, "fields"), answers, strict=False):
         key = dig_str(field, "key")

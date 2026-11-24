@@ -1,12 +1,9 @@
-"""Files the implementer must not change, enforced twice.
+"""Protection for files the implementer is not allowed to modify.
 
-"Do not edit instruction.md" started life as a sentence in a prompt, and a
-sentence is a request. Here it becomes two mechanisms:
-
-* a guard the backend enforces, so an attempted edit stops and waits for a
-  human with the diff attached instead of simply happening; and
-* a content hash, checked while the spec runs, which catches the edits that
-  arrive some other way (a shell redirect, a script the model wrote).
+Enforced in two layers:
+* a ``Guard`` passed to the backend so edit attempts pause for approval, and
+* SHA-256 content hashes checked periodically to detect edits that bypass
+  backend tool permissions (e.g. via shell redirection or scripts).
 """
 
 from __future__ import annotations
@@ -26,14 +23,14 @@ class ProtectedFiles:
     patterns: tuple[str, ...] = ()
 
     def guard(self) -> Guard:
-        """These patterns as the backend-neutral guard the session runs under."""
+        """Build a backend-independent ``Guard`` from these glob patterns."""
         return Guard(protected=self.patterns)
 
     def snapshot(self) -> dict[str, str]:
-        """A hash per matching file, plus a marker for patterns that match nothing.
+        """Hash every matching file, recording ``MISSING`` for patterns with no matches.
 
-        Recording the empty patterns means creating a protected file counts as a
-        change too, not only editing one.
+        Storing unmatched patterns ensures that creating a new file matching a
+        protected glob is detected as a change.
         """
         state: dict[str, str] = {}
         for pattern in self.patterns:
@@ -45,11 +42,11 @@ class ProtectedFiles:
         return state
 
     def changes(self, baseline: dict[str, str]) -> list[str]:
-        """Names whose content differs from ``baseline``, sorted.
+        """Return sorted paths or patterns that differ from ``baseline``.
 
-        Only meaningful when ``baseline`` is a snapshot of these same patterns:
-        under other patterns, every file one side covers and the other does not
-        would read as changed.
+        ``baseline`` must have been taken with the same pattern set; comparing
+        snapshots from different patterns would report every newly added or
+        removed pattern as a change.
         """
         current = self.snapshot()
         return sorted(
@@ -62,12 +59,11 @@ class ProtectedFiles:
         return ProtectedFiles(self.root, patterns)
 
     def entry_changes(self, baseline: dict[str, str]) -> list[str]:
-        """The entries of ``baseline`` that no longer hold, when its patterns are unknown.
+        """Check recorded ``baseline`` entries directly when the original patterns are unavailable.
 
-        A path entry must still hash the same, and a pattern recorded as matching
-        nothing must still match nothing. A new file under a glob that already had
-        matches cannot be told apart, so this is the fallback for state written
-        before baselines recorded their patterns.
+        Verifies existing file hashes and confirms previously unmatched patterns
+        still match nothing. Used as a fallback for older state files that did
+        not store ``protected_patterns``.
         """
         changed: list[str] = []
         for name, recorded in baseline.items():

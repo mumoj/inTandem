@@ -1,26 +1,21 @@
-"""``AntigravityBackend``: Antigravity CLI (``agy``), over ACP, as an implementer.
+"""``ImplementerBackend`` adapter for the Antigravity CLI (``agy``) over ACP.
 
-One ``agy acp`` process per backend, started on ``health()`` or the first
-``create_session()`` in the task directory and stopped on ``__aexit__``. It
-runs on whatever ``agy`` is signed in with; inTandem passes it no credentials.
+Runs one ``agy acp`` subprocess per backend instance, started on ``health()``
+or the first ``create_session()`` and shut down on ``aclose()``. Uses ``agy``'s
+existing sign-in without passing separate credentials.
 
-ACP pushes; the seam pulls. ``session/update`` notifications become events in
-one queue that ``events()`` serves. ``session/prompt`` blocks until the turn
-ends, so it runs in a background task and ``prompt()`` returns at once. When
-the agent asks ``session/request_permission``, the request either gets an
-answer at once or parks a future in a pending map until the planner answers
-through ``reply_permission``.
+Incoming ``session/update`` notifications are pushed onto an internal queue for
+``events()``. Because ``session/prompt`` blocks until the turn finishes, it runs
+in a background task while ``prompt()`` returns immediately. Incoming
+``session/request_permission`` calls are either answered immediately or stored
+as pending futures until ``reply_permission`` resolves them.
 
-**How protected files are guarded.** On ``session/request_permission``: an
-edit whose paths match ``Guard.protected`` is always parked for the planner,
-even when the guard is unattended. Everything else is allowed at once when the
-guard is unattended, otherwise parked too. The backend only ever picks the
-agent's ``allow_once`` option, never ``allow_always``: an agent-side "always"
-could let a later edit of a protected file through without asking. "always" is
-remembered here instead. A mode such as ``auto`` or ``accept-edits`` may stop
-the agent asking for edits at all, and a shell command that writes a file is
-not an edit; for both, a completed edit reports ``FILE_EDITED`` and the
-supervisor's content hash checks the protected files at once.
+Protected files are enforced on ``session/request_permission``: edits matching
+``Guard.protected`` always pause for review even in unattended mode, and the
+backend always sends ``allow_once`` to the agent while tracking ``always``
+approvals locally so agent-side rules cannot bypass future protected-file
+checks. Completed edits also emit ``FILE_EDITED`` so the supervisor's hash
+checks catch edits made under permissive modes or shell commands.
 """
 
 from __future__ import annotations
@@ -70,10 +65,10 @@ from intandem.backend.models import (
 log = logging.getLogger(__name__)
 
 PROVIDERS = frozenset({"antigravity", "google"})
-"""Prefixes a model may carry; the agent itself takes bare model IDs."""
+"""Accepted model provider prefixes (stripped before sending bare model IDs to ``agy``)."""
 PROTOCOL_VERSION = 1
 INIT_TIMEOUT = 60.0
-"""Seconds ``initialize`` may take before the agent counts as unresponsive."""
+"""Timeout (seconds) for the ACP ``initialize`` handshake."""
 
 CANCELLED: dict[str, Any] = {"outcome": {"outcome": "cancelled"}}
 
@@ -83,17 +78,17 @@ class _Pending:
     session_id: str
     future: asyncio.Future[tuple[PermissionReply, str | None]]
     protected: list[str] = field(default_factory=list[str])
-    """For a protected edit: the paths it would write."""
+    """Protected paths targeted by this edit request, if any."""
 
 
 @dataclass
 class _Session:
     id: str
-    """The agent's own session id, which is inTandem's too."""
+    """ACP session ID returned by ``session/new``."""
     title: str
     guard: Guard
     base: str | None
-    """The commit the task directory was at when the session started, for ``diff``."""
+    """HEAD commit when the session started, used as the baseline for ``diff``."""
     translator: translate.Translator
     available_modes: tuple[str, ...] = ()
     mode: str | None = None
@@ -103,17 +98,17 @@ class _Session:
     aborting: bool = False
     closed: bool = False
     epoch: int = 0
-    """Bumped when the session is closed, so a queued turn cannot run on it."""
+    """Incremented when the session closes so queued turns exit without running."""
     always: set[str] = field(default_factory=set[str])
-    """Tools the planner allowed for the rest of the session."""
+    """Tool names approved with ``always`` for the remainder of the session."""
     always_protected: set[tuple[str, str]] = field(default_factory=set[tuple[str, str]])
-    """(tool, path) pairs the planner allowed for the rest of the session."""
+    """``(tool, path)`` pairs approved with ``always`` for the remainder of the session."""
     transcript: list[Message] = field(default_factory=list[Message])
     tokens: TokenUsage = field(default_factory=TokenUsage)
 
 
 class AntigravityBackend:
-    """``ImplementerBackend`` over ``agy acp``. One instance serves one task directory."""
+    """``ImplementerBackend`` backed by ``agy acp`` for a single task directory."""
 
     def __init__(
         self,
@@ -146,7 +141,7 @@ class AntigravityBackend:
         await self.aclose()
 
     async def aclose(self) -> None:
-        """Close every session, stop the agent and end the event stream."""
+        """Close all sessions, stop the ACP subprocess, and terminate the event stream."""
         for _, pending in list(self._permissions.values()):
             if not pending.future.done():
                 pending.future.cancel()
@@ -159,22 +154,17 @@ class AntigravityBackend:
                 await self._transport.close()
         self._events.put_nowait(None)
 
-    # ---- the seam ------------------------------------------------------------
+    # ---- ImplementerBackend protocol -----------------------------------------
 
     async def health(self) -> Health:
-        """The agent's name and version. Raises ``BackendError`` once it has died."""
+        """Return agent name and version, raising ``BackendError`` if the subprocess exited."""
         if self._transport is not None and not self._transport.alive:
             raise BackendError(f"`{self.cli} acp` is no longer running")
         await self._connected()
         return Health(healthy=True, version=self._version or "unknown")
 
     async def create_session(self, title: str, guard: Guard) -> Session:
-        """A new ACP session in the task directory.
-
-        A task runs one spec at a time, and the supervisor aborts a spec before
-        starting the next, so older sessions are closed here. Their
-        transcripts and totals stay readable.
-        """
+        """Create a new ACP session in ``self.cwd``, closing any previous sessions."""
         transport = await self._connected(restart=True)
         for older in self._sessions.values():
             await self._close_session(older)
@@ -215,11 +205,7 @@ class AntigravityBackend:
         return self._info(self._session(session_id))
 
     async def guard_subagent(self, session_id: str, guard: Guard, inherited: object = None) -> None:
-        """Nothing to do: an agy subagent shares its parent's ACP session.
-
-        Its tool calls reach ``session/request_permission`` on the same session,
-        so the session's guard covers them, and the content hash backstops it.
-        """
+        """No-op because Antigravity subagents share the parent ACP session's permission checks."""
         self._session(session_id)
 
     async def session_status(self) -> dict[str, SessionStatus]:
@@ -235,11 +221,11 @@ class AntigravityBackend:
     async def prompt(
         self, session_id: str, text: str, model: ModelRef | None, agent: str | None = None
     ) -> None:
-        """Queue a prompt and return at once. The turn runs in the background.
+        """Queue a prompt asynchronously and run the turn in a background task.
 
-        ``model`` is a bare agy model ID, or one prefixed ``antigravity/`` or
-        ``google/``. ``agent`` is one of the session's modes, such as
-        ``default`` or ``plan``; ``None`` keeps the current one.
+        ``model`` accepts a bare ``agy`` model ID (or ``antigravity/`` or
+        ``google/`` prefix). ``agent`` selects an ACP mode (e.g. ``default`` or
+        ``plan``), or leaves the current mode unchanged when ``None``.
         """
         session = self._session(session_id)
         if session.closed:
@@ -288,7 +274,7 @@ class AntigravityBackend:
         return True
 
     async def questions(self) -> list[QuestionRequest]:
-        """None: ACP has no question requests; the agent asks in its own text."""
+        """Always empty: ACP does not define separate structured question requests."""
         return []
 
     async def reply_question(self, request_id: str, answers: list[list[str]]) -> bool:
@@ -298,21 +284,21 @@ class AntigravityBackend:
         return False
 
     async def diff(self, session_id: str) -> list[FileDiff]:
-        """What changed in the task directory since the session started, from git."""
+        """Return git diff stats since the session's baseline commit."""
         session = self._session(session_id)
         return await git_diff(self.cwd, session.base)
 
     async def events(self) -> AsyncIterator[BackendEvent]:
-        """The backend's own event queue. Returns once the backend is closed."""
+        """Yield queued backend events until ``aclose()`` is called."""
         yield BackendEvent(type=EventType.CONNECTED, native_type="antigravity.connected", raw="{}")
         while (event := await self._events.get()) is not None:
             yield event
-        self._events.put_nowait(None)  # Any later reader ends too.
+        self._events.put_nowait(None)  # Re-queue sentinel for any subsequent readers.
 
-    # ---- the agent -------------------------------------------------------------
+    # ---- ACP connection and turn execution -----------------------------------
 
     async def _connected(self, *, restart: bool = False) -> ACPTransport:
-        """The running agent, started (or, with ``restart``, restarted) and initialized."""
+        """Return an initialized ``ACPTransport``, starting (or restarting) it as needed."""
         async with self._starting:
             transport = self._transport
             if transport is not None and transport.alive:
@@ -394,7 +380,8 @@ class AntigravityBackend:
         message = session.translator.finish(result, f"msg_{next(self._ids)}", session.model)
         session.transcript.append(message)
         if retired:
-            return  # Closed under the turn: what it did is kept, but it is over already.
+            # Session closed mid-turn; keep the transcript without emitting turn-end events.
+            return
         stop = dig_str(result, "stopReason") or "end_turn"
         native = {"type": "prompt_result", "sessionId": session.id, "result": result}
         if stop == "cancelled" or session.aborting:
@@ -465,7 +452,7 @@ class AntigravityBackend:
         )
 
     async def _close_session(self, session: _Session) -> None:
-        """Stop the session's turn and close it on the agent; its transcript stays."""
+        """Cancel any active turn and close the agent session while keeping its transcript."""
         if session.closed:
             return
         was_busy = session.busy
@@ -539,7 +526,8 @@ class AntigravityBackend:
         try:
             reply, _ = await self._ask_permission(session, tool, patterns, metadata)
         except asyncio.CancelledError:
-            # An abort or close cancels the future; anything cancelling this task stops it.
+            # Re-raise if this handler task itself was cancelled; otherwise the pending
+            # future was cancelled by an abort or close, so report cancelled to the agent.
             task = asyncio.current_task()
             if task is not None and task.cancelling():
                 raise
@@ -585,7 +573,7 @@ class AntigravityBackend:
             self._emit(self._settled(session.id, request.id, reply))
 
     def _settle_pending(self, session_id: str, message: str) -> None:
-        """Cancel whatever the session is waiting on, as an abort should."""
+        """Cancel any pending permission futures for ``session_id``."""
         for _, pending in list(self._permissions.values()):
             if pending.session_id == session_id and not pending.future.done():
                 pending.future.cancel(message)
@@ -633,7 +621,7 @@ class AntigravityBackend:
 
 
 def _model_id(model: ModelRef | None) -> str | None:
-    """The bare agy model ID for ``model``; ``antigravity/`` and ``google/`` are dropped."""
+    """Return a bare ``agy`` model ID, stripping ``antigravity/`` or ``google/`` prefixes."""
     if model is None:
         return None
     if model.provider_id is None:
@@ -654,10 +642,10 @@ _KINDS: dict[str, tuple[str, ...]] = {
 
 
 def _choose(options: list[object], reply: str) -> dict[str, Any]:
-    """The reply to ``session/request_permission`` that picks the option ``reply`` means.
+    """Select the ACP permission option corresponding to ``reply``.
 
-    ``allow_once`` first, even for "always": the planner's "always" is kept by
-    the backend, so the agent goes on asking and protected edits still stop.
+    Prefers ``allow_once`` even for ``always`` replies because ``always`` is
+    tracked in this backend, keeping protected-file checks active on the agent.
     """
     for kind in _KINDS.get(reply, ()):
         for option in options:

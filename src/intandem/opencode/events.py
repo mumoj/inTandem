@@ -1,10 +1,8 @@
-"""OpenCode's event stream: the envelope, and a recorder for the raw lines.
+"""OpenCode 1.x SSE event model and raw stream recorder re-export.
 
-The stream is the only place some facts exist. A permission request blocks the
-model but appears in neither the session status nor its messages, and a turn
-that dies on a provider error looks exactly like ongoing work everywhere else.
-So the supervisor consumes every event, and the raw stream is kept on disk as
-evidence.
+Some session transitions (permission prompts, questions, and provider errors)
+are only visible on the event stream, so the supervisor consumes all events and
+logs the raw stream to disk.
 """
 
 from __future__ import annotations
@@ -20,15 +18,14 @@ from intandem.backend.stream import StreamRecorder
 __all__ = ["ABORTED", "Event", "StreamRecorder"]
 
 ABORTED = "MessageAbortedError"
-"""The error OpenCode raises for an abort. Routine when a spec is replaced."""
+"""Error name OpenCode emits when a turn is aborted."""
 
 
 class Event(BaseModel):
-    """One bus event. ``properties`` stays a plain dict on purpose.
+    """Single OpenCode bus event with an untyped ``properties`` dict.
 
-    OpenCode publishes nearly a hundred event types and adds more in minor
-    releases. Modelling each would make the supervisor brittle against the one
-    it does not care about; the handful it acts on are read by key.
+    Keeping ``properties`` untyped avoids breaking when OpenCode adds new event
+    types or fields in minor releases.
     """
 
     model_config = ConfigDict(extra="allow")
@@ -40,7 +37,7 @@ class Event(BaseModel):
 
     @classmethod
     def parse(cls, data: str) -> Event | None:
-        """Parse one SSE ``data`` payload, or ``None`` if it is not an event."""
+        """Parse an SSE ``data`` payload, returning ``None`` if it is not a valid event."""
         try:
             event = cls.model_validate_json(data)
         except ValidationError:
@@ -50,11 +47,11 @@ class Event(BaseModel):
 
     @classmethod
     def parse_global(cls, data: str, directory: str) -> Event | None:
-        """One ``/global/event`` payload, if it belongs to ``directory``.
+        """Parse a ``/global/event`` envelope if it applies to ``directory``.
 
-        A server shared by several tasks wraps every event as
-        ``{"directory": ..., "payload": event}``. Events without a directory,
-        such as ``server.connected``, concern every listener and are kept.
+        Shared servers wrap events as ``{"directory": ..., "payload": event}``.
+        Events without a directory (such as ``server.connected``) apply to all
+        listeners and are kept.
         """
         try:
             envelope = json.loads(data)
@@ -77,12 +74,12 @@ class Event(BaseModel):
         return self._raw
 
     def prop(self, *keys: str) -> object:
-        """A nested property, or ``None``: ``event.prop("status", "type")``."""
+        """Read a nested value from ``properties`` (e.g. ``event.prop("status", "type")``)."""
         return dig(self.properties, *keys)
 
     @property
     def session_id(self) -> str | None:
-        """The session an event belongs to, wherever this event type keeps it."""
+        """Extract the session ID from whichever field this event type uses."""
         return (
             dig_str(self.properties, "sessionID")
             or dig_str(self.properties, "part", "sessionID")
@@ -91,7 +88,7 @@ class Event(BaseModel):
 
     @property
     def request_id(self) -> str | None:
-        """The permission or question id: ``id`` when asked, ``requestID`` once settled."""
+        """Extract the permission or question ID (``id`` when asked, ``requestID`` when settled)."""
         return dig_str(self.properties, "requestID") or dig_str(self.properties, "id")
 
     @property

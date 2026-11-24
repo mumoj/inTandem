@@ -243,8 +243,8 @@
 </main>
 <script>
 "use strict";
-// The token arrives in the fragment and is kept per tab, so a reload still works
-// after it is taken out of the address bar.
+// Read the token from the URL fragment and persist it in sessionStorage so
+// reloading the tab still works after we strip it from the address bar.
 function readToken() {
   const fromLink = new URLSearchParams(location.hash.slice(1)).get("token");
   try {
@@ -271,7 +271,7 @@ function el(tag, attrs, ...children) {
 
 class Unauthorized extends Error {}
 
-// Relative to the page, so the dashboard works at /ui and mounted at /t/<task>/ui alike.
+// Use relative paths so API calls work both at /ui and mounted under /t/<task>/ui.
 async function api(path, body) {
   const response = await fetch(path.replace(/^\//, ""), {
     method: body === undefined ? "GET" : "POST",
@@ -824,7 +824,7 @@ function enterStopped() {
 
 async function poll() {
   if (stopped && pollTimer === null) return;
-  if (live) return;  // The live feed is pushing everything; polling is only the fallback.
+  if (live) return;  // Skip polling while the SSE live feed is active.
   try {
     renderOverview(await api("/overview"));
     await refreshJournal();
@@ -844,8 +844,7 @@ async function poll() {
       setState("offline", "no access");
       return;
     }
-    // The bridge goes away with its supervisor; a few misses in a row, or a stop
-    // already seen in the journal, mean it has stopped rather than hiccupped.
+    // Treat repeated failures (or a stop already logged in the journal) as a stopped supervisor.
     if (stopped || landedInfo || failures >= 3) { enterStopped(); return; }
     banner.className = "banner";
     banner.textContent = "The supervisor is not answering. It may have stopped. Retrying…";
@@ -854,10 +853,9 @@ async function poll() {
 }
 
 // ---- live feed -------------------------------------------------------------
-// One long-lived GET /live: the server pushes each part as it changes, so the
-// page updates within a frame instead of on the next poll. fetch() rather than
-// EventSource, because EventSource cannot send the Authorization header.
-// While it is down, poll() takes over and this reconnects with backoff.
+// Stream updates over GET /live using fetch() instead of EventSource so we can
+// send the Authorization header. Falls back to poll() while disconnected and
+// reconnects with exponential backoff.
 
 let live = false;
 
@@ -916,7 +914,7 @@ async function runLive() {
     }
     live = false;
     if (stopped || landedInfo) { enterStopped(); return; }
-    if (Date.now() - started > 10000) delay = 500;  // It had been up: retry quickly.
+    if (Date.now() - started > 10000) delay = 500;  // Reset backoff after a stable connection.
     await poll();
     await new Promise((resolve) => setTimeout(resolve, delay));
     delay = Math.min(delay * 2, 5000);
@@ -948,7 +946,7 @@ if (!token) {
   setState("offline", "no access");
 } else {
   $("review-tab").href = "ui/review#token=" + encodeURIComponent(token);
-  // Keep the token out of the address bar once it is read, so it is not shoulder-surfed or bookmarked by accident.
+  // Strip the token fragment from the URL bar once stored to avoid accidental bookmarking or exposure.
   history.replaceState(null, "", location.pathname);
   setupOpenCode();
   poll();

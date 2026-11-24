@@ -1,7 +1,7 @@
-"""The Antigravity CLI (``agy``) implementer backend, over ACP on stdio.
+"""Antigravity CLI (``agy``) implementer backend communicating over ACP stdio.
 
-No extra dependencies: the ACP client is the stdlib's ``asyncio`` subprocess
-and newline-delimited JSON. It needs ``agy`` on PATH, signed in.
+Uses only the standard library (``asyncio`` subprocesses and newline-delimited
+JSON) and requires a signed-in ``agy`` executable on ``PATH``.
 """
 
 from intandem.antigravity.backend import AntigravityBackend

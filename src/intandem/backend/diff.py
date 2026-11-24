@@ -1,4 +1,4 @@
-"""Worktree diff from git, reusable by any implementer backend."""
+"""Git-based diff helpers shared across implementer backends."""
 
 from __future__ import annotations
 
@@ -27,7 +27,7 @@ async def _git(cwd: Path, *args: str) -> str:
 
 
 async def git_head(cwd: Path) -> str | None:
-    """The current HEAD commit in ``cwd``, or ``None`` outside a git repository."""
+    """Return the current HEAD commit hash in ``cwd``, or ``None`` if not a git repo."""
     try:
         return (await _git(cwd, "rev-parse", "HEAD")).strip() or None
     except BackendError:
@@ -35,7 +35,7 @@ async def git_head(cwd: Path) -> str | None:
 
 
 async def git_diff(cwd: Path, base: str | None = None) -> list[FileDiff]:
-    """What changed in ``cwd`` since ``base`` (or HEAD), plus untracked files as added."""
+    """Return files changed in ``cwd`` since ``base`` (default HEAD), including untracked files."""
     target = base or "HEAD"
     try:
         numstat = await _git(cwd, "diff", "--numstat", "--no-renames", target)

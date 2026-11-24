@@ -1,8 +1,7 @@
-"""Smoke test: the Claude Code backend driving the real ``claude`` CLI.
+"""Opt-in end-to-end smoke test for ``ClaudeCodeBackend`` with a real ``claude`` CLI.
 
-Opt-in, because it runs on the user's own Claude subscription: set
-``INTANDEM_E2E_CLAUDE=1`` and have a logged-in ``claude`` on PATH
-(``claude auth login``). It is skipped otherwise.
+Set ``INTANDEM_E2E_CLAUDE=1`` with a logged-in ``claude`` CLI on ``PATH`` to
+run; skipped by default.
 """
 
 from __future__ import annotations

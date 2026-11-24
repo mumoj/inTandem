@@ -1,7 +1,7 @@
-"""A ``Guard`` as OpenCode permission rules.
+"""Translates ``Guard`` policies into OpenCode 1.x permission rulesets.
 
-OpenCode evaluates a ruleset in order and the last match wins, so broad rules
-come first and the narrow rules that override them come last.
+OpenCode applies rules in order with last-match-wins semantics, so broad
+unattended rules are placed first and per-pattern restrictions last.
 """
 
 from __future__ import annotations
@@ -11,7 +11,7 @@ from typing import cast
 from intandem.backend.guard import Guard
 from intandem.opencode.models import PermissionAction, PermissionRule
 
-# What an unattended run needs to avoid stalling on OpenCode's cautious defaults.
+# Baseline allow rules so unattended sessions don't pause on routine operations.
 UNATTENDED_RULES: tuple[PermissionRule, ...] = (
     PermissionRule(permission="edit", pattern="*", action=PermissionAction.ALLOW),
     PermissionRule(permission="external_directory", pattern="*", action=PermissionAction.ALLOW),
@@ -20,10 +20,10 @@ UNATTENDED_RULES: tuple[PermissionRule, ...] = (
 
 
 def guard_to_rules(guard: Guard) -> list[PermissionRule]:
-    """The spec session's ruleset: unattended defaults, then one ask per pattern.
+    """Build a session ruleset with unattended defaults and ``ask`` rules for protected globs.
 
-    Ask, not deny: an attempted edit stops and waits for a human with the diff
-    attached, instead of failing in a way the model would route around.
+    Uses ``ask`` rather than ``deny`` so attempted edits pause for user review
+    with the diff attached instead of failing immediately.
     """
     base = list(UNATTENDED_RULES) if guard.unattended else []
     asks = [
@@ -34,11 +34,10 @@ def guard_to_rules(guard: Guard) -> list[PermissionRule]:
 
 
 def subagent_rules(inherited: object, guard: Guard) -> list[PermissionRule]:
-    """A subagent's own rules, then a deny per protected pattern, last so it wins.
+    """Append ``deny`` rules for protected patterns to a subagent's existing ruleset.
 
-    A subagent runs in a session of its own, created by OpenCode with its agent's
-    rules, not the spec's. Deny rather than ask: ask would loosen an agent that
-    already denies edits.
+    Uses ``deny`` rather than ``ask`` so we do not weaken a subagent agent whose
+    own policy already denies edits.
     """
     existing = [
         PermissionRule.model_validate(rule)

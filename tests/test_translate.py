@@ -1,4 +1,4 @@
-"""OpenCode bus events, read into inTandem's neutral event."""
+"""Tests for translating OpenCode 1.x bus events into ``BackendEvent``."""
 
 from __future__ import annotations
 

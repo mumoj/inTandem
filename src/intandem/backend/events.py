@@ -1,13 +1,12 @@
-"""The event stream in inTandem's own terms.
+"""Normalized event types produced by backend adapters.
 
-A harness publishes far more event types than inTandem acts on, under names
-and shapes of its own. An adapter turns each one it receives into a
-``BackendEvent``: one of the few types below, with the fields the supervisor,
-activity tracker and notifier read already pulled out. Everything else is
-``EventType.OTHER``, still recorded but otherwise ignored.
+Each harness emits its own event names and payload shapes. Adapters translate
+those into ``BackendEvent`` instances with the fields needed by the supervisor,
+activity tracker, and notifier. Unhandled events become ``EventType.OTHER`` so
+they are still logged without affecting supervisor logic.
 
-The type values are the names inTandem has always journalled, so existing
-journals and the dashboard read the same whichever harness produced them.
+Enum values match the historical journal event names so existing journals and
+the dashboard work consistently across harnesses.
 """
 
 from __future__ import annotations
@@ -43,56 +42,56 @@ TURN_OVER = frozenset({EventType.IDLE, EventType.ERROR})
 
 
 class PartUpdate(BaseModel):
-    """One piece of a message changed: a tool call, or text or reasoning."""
+    """Describes an update to a message part (tool call, text, or reasoning)."""
 
     kind: str
-    """``tool``, ``text``, ``reasoning``, or whatever else the harness calls it."""
+    """Part type such as ``tool``, ``text``, or ``reasoning``."""
     call_id: str = ""
     tool: str = ""
     running: bool = False
-    """For a tool: still pending or running, rather than finished or failed."""
+    """True while a tool call is still pending or executing."""
     detail: str = ""
-    """For a tool: a bounded one-line summary, such as the command it runs."""
+    """Short one-line summary for a tool call, such as the command being run."""
 
 
 class BackendEvent(BaseModel):
     type: EventType
     native_type: str
-    """What the harness called it, for logs."""
+    """Original event name from the backend, kept for logging."""
     session_id: str | None = None
 
     request_id: str | None = None
-    """The permission or question asked, replied to or rejected."""
+    """ID of the permission request or question."""
     permission: str | None = None
     patterns: list[str] = Field(default_factory=list[str])
     question: str = ""
-    """The first question asked, for an alert's one-line summary."""
+    """First question prompt text, used in one-line alert summaries."""
 
     child_id: str | None = None
-    """``SESSION_CREATED``: the new session, and the one that started it."""
+    """Session ID of a newly created child session (for ``SESSION_CREATED``)."""
     child_parent_id: str | None = None
     child_policy: object = None
-    """The new session's own permission policy, opaque, for ``guard_subagent``."""
+    """Opaque permission policy reported for the new child session, passed to ``guard_subagent``."""
 
     status: str | None = None
-    """``STATUS``: ``idle``, ``busy`` or ``retry``."""
+    """Session status for ``STATUS`` events: ``idle``, ``busy``, or ``retry``."""
     retry_detail: str | None = None
 
     error_name: str | None = None
     error_message: str = ""
     aborted: bool = False
-    """``ERROR`` caused by an abort, which inTandem sends itself when replacing a spec."""
+    """True when an ``ERROR`` event resulted from an intentional abort."""
 
     part: PartUpdate | None = None
     delta_field: str | None = None
-    """``PART_DELTA``: which field grew, such as ``text`` or ``tool``."""
+    """Field updated by a ``PART_DELTA`` event (e.g. ``text`` or ``tool``)."""
     delta: str = ""
-    """``PART_DELTA``: what was appended, when the harness sends it."""
+    """Appended text for a ``PART_DELTA`` event, if provided by the backend."""
 
     model: str | None = None
-    """Resolved model name reported by the backend, e.g. from init or assistant messages."""
+    """Resolved model name reported by the backend (e.g. from init or assistant messages)."""
 
     native: dict[str, Any] = Field(default_factory=dict[str, Any])
-    """The event as the harness sent it, for ``$INTANDEM_EVENT``."""
+    """Original backend payload, forwarded to ``$INTANDEM_EVENT``."""
     raw: str = ""
-    """The line as it arrived, for the stream recorder."""
+    """Raw serialized event line written by the stream recorder."""

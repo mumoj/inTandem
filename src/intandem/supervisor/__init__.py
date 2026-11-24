@@ -1,4 +1,4 @@
-"""The supervisor and the pieces it is built from."""
+"""Supervisor core and supporting state, activity, journal, and protection modules."""
 
 from intandem.supervisor.activity import Activity, ActivityTracker
 from intandem.supervisor.journal import Journal

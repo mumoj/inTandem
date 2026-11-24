@@ -1,8 +1,7 @@
-"""An append-only record of everything the supervisor did and saw.
+"""Append-only JSONL audit log of supervisor actions and blocking stream events.
 
-This is the file a reviewer greps. It holds one line per state change, plus
-the stream events that end forward progress, so a turn that died mid-flight
-leaves a trace here without anyone reading a multi-megabyte session capture.
+Records one line per state transition and escalation so a task's history can be
+inspected without reading full session transcripts.
 """
 
 from __future__ import annotations
@@ -27,16 +26,15 @@ class Journal:
         self.path = path
 
     def append(self, action: str, **details: Any) -> None:
-        """Record ``action``. ``time`` and ``action`` are written last.
+        """Append a JSONL entry for ``action``.
 
-        A caller's detail key can therefore never silently redefine them: this
-        is the audit trail for every intervention, so its own schema has to be
-        trustworthy.
+        ``time`` and ``action`` are placed last in the dict so keys in
+        ``details`` cannot overwrite them.
         """
         record = {**details, "time": round(time.time(), 3), "action": action}
         descriptor = os.open(self.path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
         try:
-            # One write() per line on an O_APPEND descriptor: lines never interleave.
+            # Single write() on an O_APPEND fd avoids interleaved lines across writers.
             os.write(descriptor, dump_jsonl(record).encode())
         finally:
             os.close(descriptor)
@@ -44,10 +42,10 @@ class Journal:
         log.info("%s %s", action, summary)
 
     def read_from(self, offset: int | None, limit: int) -> tuple[list[dict[str, Any]], int]:
-        """Whole lines after byte ``offset``, and the offset to continue from.
+        """Read complete lines starting at byte ``offset`` and return ``(entries, next_offset)``.
 
-        ``None`` starts from the last ``limit`` lines. A line still being
-        written is left for the next call rather than returned half-parsed.
+        When ``offset`` is ``None``, returns the last ``limit`` lines. Incomplete
+        trailing lines (without a newline) are deferred to the next read.
         """
         if not self.path.exists():
             return [], 0

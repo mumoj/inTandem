@@ -1,22 +1,21 @@
-"""Tell a thinking implementer from a stuck one.
+"""Classifies implementer session activity from streamed backend events.
 
-OpenCode reports one status, ``busy``, for a turn in very different states. The
-mix of events arriving is the only thing that separates them:
+Backends typically report a single ``busy`` state for very different situations,
+so we infer finer-grained states from the incoming event stream:
 
 =================  =========================================================
-working            tool calls arriving, or a tool still running
-reasoning_stall    text keeps arriving but no tool has run for a long time
-blocked            a permission or question is waiting on a human
-hung               nothing has arrived for a long time
-error              the turn ended on a provider or model error
-idle               no turn running
+working            tool calls are arriving or a tool is currently running
+reasoning_stall    text keeps arriving without any tool calls for too long
+blocked            a permission request or question is awaiting a reply
+hung               neither text nor tool events have arrived for too long
+error              the turn ended with a provider or model error
+idle               no turn is currently running
 =================  =========================================================
 
-The reasoning stall is the one nothing else catches. On one task the
-implementer produced about 9,000 characters of reasoning over 25 minutes and
-wrote nothing: the spec contradicted itself and it would not guess past the
-contradiction. Restarting would have thrown the reasoning away and hit the same
-wall. The useful response was to fix the spec, which needs someone to notice.
+Detecting reasoning stalls is especially useful when an ambiguous or
+contradictory spec causes the model to emit reasoning text indefinitely without
+taking action; surfacing it lets the planner revise the spec instead of letting
+the turn spin.
 """
 
 from __future__ import annotations
@@ -44,7 +43,7 @@ _TOOL_DETAIL_COUNT = 5
 
 
 class ActivityReport(BaseModel):
-    """The numbers behind a classification, for a human deciding what to do."""
+    """Snapshot of the current activity state and timing metrics."""
 
     activity: Activity
     busy: bool
@@ -59,14 +58,13 @@ class ActivityReport(BaseModel):
 
 @dataclass
 class ActivityTracker:
-    """Fold one session's events, and its subagents', into an ``Activity``.
+    """Tracks events for a session and its subagents to classify activity.
 
-    Feed it every event with ``observe``; it ignores events for other sessions.
-    A subagent runs in a child session. Its tools, text and permission requests
-    count, since a subagent stuck on a prompt is the spec stuck on a prompt, but
-    its idle and errors do not end the parent's turn.
-    ``classify`` is cheap and side-effect free, so callers can ask as often as
-    they like.
+    Pass all stream events to ``observe``; events for unrelated sessions are
+    ignored. Tool activity, text output, and pending prompts from child
+    subagent sessions count toward the parent spec, while child idle and error
+    events do not end the parent turn. ``classify`` has no side effects and can
+    be called repeatedly.
     """
 
     stall_after: float = 720.0
@@ -90,7 +88,7 @@ class ActivityTracker:
         self.last_tool = self.last_text = self.turn_started_at = self.clock()
 
     def track(self, session_id: str | None) -> None:
-        """Start following a different session, forgetting the previous one."""
+        """Reset tracker state and begin following ``session_id``."""
         self.session_id = session_id
         self.children.clear()
         self.busy = False
@@ -102,10 +100,10 @@ class ActivityTracker:
         self.last_tool = self.last_text = self.clock()
 
     def turn_started(self) -> None:
-        """A prompt was sent. Busy from now, before the server says so.
+        """Mark the session as busy immediately after sending a prompt.
 
-        Without this, a ``wait`` issued straight after a prompt would see the
-        session as idle and report the turn finished before it began.
+        Doing this eagerly prevents a ``wait`` call issued right after a prompt
+        from seeing the session as idle before the backend emits its busy event.
         """
         now = self.clock()
         self.busy = True
@@ -114,18 +112,14 @@ class ActivityTracker:
         self.last_tool = self.last_text = self.turn_started_at = now
 
     def sync_pending(self, request_ids: set[str]) -> None:
-        """Replace the pending set with what the server reports.
-
-        Used after the event stream reconnects, when replies may have been
-        missed.
-        """
+        """Replace the pending request set from a server snapshot after reconnecting."""
         self.pending = set(request_ids)
 
     def sync_busy(self, busy: bool, *, grace: float = 10.0) -> None:
-        """Adopt the server's view of whether the turn is running.
+        """Reconcile busy state with the server's reported session status.
 
-        A prompt sent moments ago may not have reached the server's status yet,
-        so a fresh turn is not ended on the strength of a stale ``idle``.
+        Ignores an ``idle`` report during the short grace period right after a
+        prompt is sent, in case the server status has not updated yet.
         """
         if busy and not self.busy:
             self.turn_started()
@@ -134,11 +128,11 @@ class ActivityTracker:
 
     @property
     def family(self) -> set[str]:
-        """The tracked session and every subagent session descended from it."""
+        """Set containing the tracked session ID and all adopted child session IDs."""
         return {self.session_id, *self.children} if self.session_id else set()
 
     def adopt(self, session_id: str, parent_id: str | None) -> bool:
-        """Follow ``session_id`` too if it descends from the tracked session."""
+        """Start tracking ``session_id`` as a child if ``parent_id`` is in ``self.family``."""
         if parent_id is not None and parent_id in self.family:
             self.children.add(session_id)
             return True
@@ -164,7 +158,7 @@ class ActivityTracker:
             self.pending.discard(event.request_id)
 
     def _observe_turn(self, event: BackendEvent) -> None:
-        """Turn boundaries count only on the tracked session, never a subagent's."""
+        """Process turn lifecycle events (only called for the primary session, not subagents)."""
         match event.type:
             case EventType.STATUS:
                 if event.status in ("busy", "retry"):
@@ -196,7 +190,7 @@ class ActivityTracker:
             self.last_text = now
 
     def turn_ended(self) -> None:
-        """The turn finished, failed, or never started."""
+        """Clear active turn state once a turn finishes or fails."""
         self.busy = False
         self.retry = None
         self.running_tools.clear()
@@ -213,9 +207,8 @@ class ActivityTracker:
         tool_idle = now - self.last_tool
         text_idle = now - self.last_text
         if self.running_tools:
-            # A long test run is work, not a hang. A tool that has produced no
-            # update for as long as a reasoning stall takes is probably stuck
-            # on input it will never get.
+            # Allow long-running tools (such as test suites) up to stall_after
+            # before treating them as hung.
             return Activity.WORKING if tool_idle < self.stall_after else Activity.HUNG
         if text_idle < self.text_recent and tool_idle > self.stall_after:
             return Activity.REASONING_STALL

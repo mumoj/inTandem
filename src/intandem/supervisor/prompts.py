@@ -1,10 +1,8 @@
-"""The text the implementer receives.
+"""Prompt templates sent to the implementer session.
 
-Every prompt opens with a marker line. After a restart, the supervisor cannot
-know whether a prompt it was sending reached the session, so it looks for the
-marker in the session's messages before sending again. That makes delivery
-idempotent: at most one copy of each spec or directive, however many times the
-supervisor restarts.
+Each prompt starts with a marker line (spec ID or directive ID) so that after a
+restart the supervisor can check the session transcript and avoid sending a
+duplicate copy of a prompt that was already delivered.
 """
 
 from __future__ import annotations

@@ -1,9 +1,8 @@
-"""A ``Guard`` as an OpenCode 2 permission ruleset.
+"""Translates ``Guard`` policies into OpenCode 2.x permission rulesets.
 
-2.x renamed the rule fields (``{action, resource, effect}`` for 1.x's
-``{permission, pattern, action}``) but kept the evaluation: in order, the last
-match wins. Checked against 2.3.2: ``[allow edit *, ask edit instruction.md]``
-stops an edit of ``instruction.md`` for a human, and lets every other through.
+OpenCode 2.x uses ``{action, resource, effect}`` objects (replacing 1.x's
+``{permission, pattern, action}``) with the same last-match-wins evaluation
+order.
 """
 
 from __future__ import annotations
@@ -22,14 +21,14 @@ UNATTENDED_RULES: tuple[Rule, ...] = (
 
 
 def guard_to_rules(guard: Guard) -> list[Rule]:
-    """The spec session's ruleset: unattended defaults, then one ask per pattern."""
+    """Build a session ruleset with unattended defaults and ``ask`` rules for protected globs."""
     base = [dict(rule) for rule in UNATTENDED_RULES] if guard.unattended else []
     asks = [{"action": "edit", "resource": p, "effect": "ask"} for p in guard.protected]
     return [*base, *asks]
 
 
 def subagent_rules(inherited: object, guard: Guard) -> list[Rule]:
-    """A subagent's own rules, then a deny per protected pattern, last so it wins."""
+    """Append ``deny`` rules for protected globs after a subagent's inherited rules."""
     existing: list[Rule] = []
     for rule in cast(list[object], inherited) if isinstance(inherited, list) else []:
         if isinstance(rule, dict):

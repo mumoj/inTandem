@@ -1,4 +1,4 @@
-"""The dashboard's live feed: what it pushes, when, and that it lets the server stop."""
+"""Tests for the SSE live dashboard feed (event coalescing, rate limiting, and shutdown)."""
 
 from __future__ import annotations
 

@@ -79,7 +79,7 @@ async function json(path) {
 }
 
 async function card(task) {
-  // The task's dashboard link carries the same token; its API lives beside it.
+  // Derive the task API base path from its dashboard URL (shares the same bearer token).
   const base = new URL(task.dashboard).pathname.replace(/ui$/, "");
   let state = "offline", label = "offline", meta = "";
   try {

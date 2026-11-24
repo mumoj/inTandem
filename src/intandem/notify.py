@@ -1,18 +1,13 @@
-"""Reach a human who is not watching the terminal.
+"""Alert logging and asynchronous delivery for events that need user attention.
 
-A headless session that is waiting on a person stalls indefinitely, and
-nothing else times it out. Polling is not a plan, so the events that stop
-forward progress are pushed.
+Only events that block progress (permission prompts, questions, stalls,
+protected-file violations, and unexpected errors) are escalated. Normal turn
+completions are handled by ``wait``, and abort errors caused by retiring a
+session are ignored to avoid alert noise.
 
-Only those are escalated. A finished turn is for the planner's ``wait``, not
-for a person's attention, and a notification nobody needed is worse than none:
-it trains the reader to ignore the channel that carries the real failure. The
-same reasoning drops an aborted turn's error, which the supervisor causes itself
-every time it replaces a session.
-
-Everything is still recorded in ``notifications.log``. Delivery never blocks
-the caller: the supervisor consumes the event stream inline, so a slow
-notifier would delay the next report.
+All alerts are appended to ``notifications.log``. External delivery (shell
+command or ntfy) runs in background tasks so slow notifiers never block event
+stream processing.
 """
 
 from __future__ import annotations
@@ -34,7 +29,7 @@ from intandem.backend.events import BackendEvent, EventType
 log = logging.getLogger(__name__)
 
 MAX_EVENT_BYTES = 64 * 1024
-"""Linux refuses to start a process with an environment string over 128 KiB."""
+"""Payload limit to stay well under Linux's 128 KiB per-env-var limit."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,7 +41,7 @@ class Alert:
 
     @classmethod
     def from_event(cls, event: BackendEvent) -> Alert | None:
-        """The alert an event deserves, or ``None`` if nobody needs to know."""
+        """Convert a backend event into an ``Alert``, or ``None`` if it should not be escalated."""
         match event.type:
             case EventType.PERMISSION_ASKED:
                 patterns = ", ".join(event.patterns)
@@ -67,12 +62,12 @@ class Alert:
 
 
 def _event_json(alert: Alert) -> str:
-    """The event for ``$INTANDEM_EVENT``, or a stub if it is too big to pass on.
+    """Serialize ``alert.payload`` for ``$INTANDEM_EVENT``, stubbing oversized payloads.
 
-    A stub rather than a cut, so the command always gets valid JSON. Losing the
-    event's detail is better than losing the alert.
+    Returning a small JSON stub instead of slicing the string guarantees the
+    notification command always receives valid JSON.
     """
-    encoded = json.dumps(alert.payload)  # ASCII by default, so characters are bytes
+    encoded = json.dumps(alert.payload)  # ASCII by default, so len(encoded) == byte length.
     if len(encoded) <= MAX_EVENT_BYTES:
         return encoded
     return json.dumps(
@@ -106,8 +101,7 @@ class Notifier:
         self.ntfy_url = f"{ntfy_server.rstrip('/')}/{ntfy_topic}" if ntfy_topic else None
         self.timeout = timeout
         self._http = http
-        # Strong references: asyncio keeps only weak ones, and a delivery task
-        # collected mid-flight would vanish without a trace.
+        # Keep strong references to background tasks so asyncio does not GC them mid-flight.
         self._tasks: set[asyncio.Task[None]] = set()
 
     def escalate(self, alert: Alert) -> None:
@@ -156,7 +150,7 @@ class Notifier:
         try:
             await asyncio.wait_for(process.wait(), timeout=self.timeout)
         except TimeoutError:
-            # A hung notifier must not pile up: kill it and carry on.
+            # Kill hung notification commands so they do not accumulate.
             with contextlib.suppress(ProcessLookupError):
                 process.kill()
             await process.wait()
@@ -172,7 +166,8 @@ class Notifier:
             response = await http.post(
                 self.ntfy_url,
                 content=alert.summary.encode(),
-                # Bytes: httpx encodes a str header as ASCII, and ntfy reads UTF-8.
+                # Pass header values as bytes because httpx encodes str headers as ASCII,
+                # while ntfy expects UTF-8.
                 headers={b"Title": f"inTandem {self.task}: {alert.kind}".encode()},
             )
             response.raise_for_status()
@@ -183,6 +178,6 @@ class Notifier:
                 await http.aclose()
 
     async def drain(self) -> None:
-        """Wait for deliveries in flight. Called once, at shutdown."""
+        """Wait for in-flight alert deliveries to finish during shutdown."""
         if self._tasks:
             await asyncio.wait(set(self._tasks), timeout=self.timeout)

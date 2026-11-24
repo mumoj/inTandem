@@ -1,10 +1,8 @@
-"""Install OpenCode when there is none, from its GitHub release, checksum verified.
+"""Downloads and verifies a pinned OpenCode GitHub release when none is installed.
 
-The official installer is a shell script piped from the web. This does what it
-does for one pinned, tested release instead: download the archive for this
-platform, check it against the release's ``SHA256SUMS``, and unpack the binary
-to ``~/.opencode/bin``, where the installer puts it and where inTandem already
-looks. Set ``INTANDEM_NO_INSTALL=1`` to fail instead of installing.
+Downloads the platform archive, checks its SHA-256 against the release's
+``SHA256SUMS``, and extracts the binary to ``~/.opencode/bin``. Set
+``INTANDEM_NO_INSTALL=1`` to disable automatic installation.
 """
 
 from __future__ import annotations
@@ -23,14 +21,14 @@ from pathlib import Path
 import httpx
 
 INSTALL_VERSION = "2.3.2"
-"""The newest release the OpenCode 2 adapter was recorded and tested against."""
+"""Pinned OpenCode release tested against the OpenCode 2 adapter."""
 
 RELEASES = "https://github.com/anomalyco/opencode/releases/download"
 NO_INSTALL = "INTANDEM_NO_INSTALL"
 
 
 class InstallError(RuntimeError):
-    """OpenCode could not be installed."""
+    """Raised when downloading, verifying, or extracting OpenCode fails."""
 
 
 def install_dir() -> Path:
@@ -38,7 +36,7 @@ def install_dir() -> Path:
 
 
 def asset_name(system: str | None = None, machine: str | None = None) -> str:
-    """The release archive for this platform, e.g. ``opencode-linux-x64.tar.gz``."""
+    """Return the GitHub release asset filename for the given platform and architecture."""
     system = (system or sys.platform).lower()
     machine = (machine or platform.machine()).lower()
     arch = {"x86_64": "x64", "amd64": "x64", "aarch64": "arm64", "arm64": "arm64"}.get(machine)
@@ -103,7 +101,7 @@ def _expected_digest(sums: str, name: str) -> str:
 
 
 def _extract(name: str, archive: bytes) -> bytes:
-    """The ``opencode`` binary from a release archive, read without unpacking to disk."""
+    """Extract the ``opencode`` binary from an in-memory ``.zip`` or ``.tar.gz`` archive."""
     if name.endswith(".zip"):
         with zipfile.ZipFile(io.BytesIO(archive)) as bundle:
             member = next((n for n in bundle.namelist() if Path(n).name == "opencode"), None)

@@ -1,8 +1,7 @@
-"""The OpenCode 2 adapter: its HTTP mapping (respx) and its event translation.
+"""Tests for ``OpenCode2Client`` HTTP requests (via respx) and SSE event translation.
 
-The translation tests replay streams recorded from a real 2.3.2 server driven
-by the scripted model (``tests/fixtures/opencode2``), so they check the shapes
-OpenCode actually sends, not ones guessed from its schema.
+Translation tests replay streams recorded from OpenCode 2.3.2
+(``tests/fixtures/opencode2``) to verify handling of actual server payloads.
 """
 
 from __future__ import annotations

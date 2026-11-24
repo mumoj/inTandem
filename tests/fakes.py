@@ -1,8 +1,7 @@
-"""In-memory stand-ins for OpenCode and the clock.
+"""In-memory fakes for ``ImplementerBackend`` and the monotonic clock.
 
-``FakeOpenCode`` implements the ``ImplementerBackend`` protocol, which is the whole
-point of that seam: the supervisor's logic is tested without a process, a port,
-or a model. The end-to-end test covers the real thing.
+Allows unit tests to exercise supervisor logic without spawning a backend
+process or making network calls.
 """
 
 from __future__ import annotations
@@ -76,7 +75,7 @@ class FakeOpenCode:
     # -- helpers for tests --------------------------------------------------
 
     def add_subagent(self, parent_id: str) -> str:
-        """A child session, as OpenCode's task tool creates one, without an event."""
+        """Register a child subagent session directly without emitting an event."""
         session_id = f"ses_{next(self._ids)}"
         self.sessions[session_id] = FakeSession(session_id, "subagent", [], parent_id=parent_id)
         return session_id
@@ -202,6 +201,6 @@ class FakeOpenCode:
 
 
 def event(kind: str, **properties: Any) -> BackendEvent:
-    """An OpenCode bus event, as the OpenCode adapter hands it to the supervisor."""
+    """Build a normalized ``BackendEvent`` from a raw OpenCode event type and properties."""
     parsed = Event.model_validate({"id": "evt_1", "type": kind, "properties": properties})
     return from_opencode(parsed)

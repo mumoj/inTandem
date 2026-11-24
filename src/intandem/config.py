@@ -1,8 +1,8 @@
-"""Settings and the on-disk layout of one supervised task.
+"""Configuration settings and on-disk layout for a supervised task.
 
-Every knob lives in one ``Settings`` class so the CLI, the environment and the
-tests all configure the same object. Environment variables use the
-``INTANDEM_`` prefix: ``INTANDEM_MODEL=openrouter/qwen/qwen3-coder``.
+All configuration lives in ``Settings`` so the CLI, environment variables, and
+tests share the same schema. Environment variables use the ``INTANDEM_`` prefix
+(for example, ``INTANDEM_MODEL=openrouter/qwen/qwen3-coder``).
 """
 
 from __future__ import annotations
@@ -18,70 +18,71 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 def default_state_root() -> Path:
-    """``$XDG_STATE_HOME/intandem``, the XDG home for logs and resumable state."""
+    """Return ``$XDG_STATE_HOME/intandem`` for storing logs and resumable state."""
     base = os.environ.get("XDG_STATE_HOME") or str(Path.home() / ".local" / "state")
     return Path(base) / "intandem"
 
 
 class Settings(BaseSettings):
-    """Everything one task needs, and how ``inTandem serve`` starts its hub."""
+    """Configuration for a single task and for starting the hub via ``inTandem serve``."""
 
     model_config = SettingsConfigDict(env_prefix="INTANDEM_", extra="ignore")
 
     task_dir: Path
-    """The working tree OpenCode edits."""
+    """Working directory edited by the implementer."""
 
     model: str | None = None
-    """``provider/model`` for the implementer. ``None`` uses the harness's default."""
+    """Model in ``provider/model`` format. When ``None``, uses the harness default."""
 
     harness: Literal["opencode", "claude", "antigravity"] = "opencode"
-    """What runs the implementer: OpenCode, Claude Code through the Agent SDK, or
-    the Antigravity CLI (``agy``) over ACP.
+    """Implementer harness: OpenCode, Claude Code (via the Agent SDK), or the
+    Antigravity CLI (``agy``) over ACP.
 
-    ``claude`` needs the ``claude`` extra and a logged-in ``claude`` CLI, and its
-    models are ``anthropic/<model>``. ``antigravity`` needs a signed-in ``agy``
-    and takes its bare model IDs (``agy models``) or ``antigravity/<model>``."""
+    ``claude`` requires the optional ``claude`` extra and a logged-in ``claude``
+    CLI, and uses ``anthropic/<model>`` names. ``antigravity`` requires a
+    signed-in ``agy`` CLI and accepts bare model IDs (from ``agy models``) or
+    ``antigravity/<model>``."""
 
     claude_bin: str = "claude"
-    """The Claude Code CLI the claude harness runs, with the user's own login."""
+    """Path or name of the ``claude`` CLI executable."""
 
     antigravity_bin: str = "agy"
-    """The Antigravity CLI the antigravity harness runs as ``agy acp``."""
+    """Path or name of the Antigravity CLI executable (run as ``agy acp``)."""
 
     protected: list[str] = Field(default_factory=list)
-    """Glob patterns, relative to the task, that the implementer must not edit."""
+    """Glob patterns relative to ``task_dir`` that the implementer may not edit."""
 
     opencode_bin: str = "opencode"
-    """The binary ``inTandem serve`` starts its shared OpenCode server from."""
+    """Executable used by ``inTandem serve`` to start the shared OpenCode server."""
     opencode_port: int = 0
-    """Where ``inTandem serve`` starts its shared OpenCode server. 0: a free port."""
+    """Port for the shared OpenCode server (0 chooses an available port)."""
     opencode_url: str | None = None
-    """The shared ``opencode serve`` this task attaches to. Set by the hub."""
+    """URL of the shared ``opencode serve`` instance, populated by the hub."""
     opencode_password: SecretStr | None = None
-    """The shared server's password. Set by the hub, never taken from argv."""
+    """Password for the shared OpenCode server, populated by the hub."""
     bridge_port: int = 0
-    """Where ``inTandem serve`` listens. 0: a free port."""
+    """Port for ``inTandem serve`` to listen on (0 chooses an available port)."""
     state_root: Path = Field(default_factory=default_state_root)
 
     notify_cmd: str | None = None
-    """Shell command run for every escalated event, with the summary in ``$INTANDEM_NOTIFY``."""
+    """Shell command run on escalated alerts, with the summary passed in ``$INTANDEM_NOTIFY``."""
 
     ntfy_topic: str | None = None
-    """Opt-in push to ntfy. Off by default: it publishes summaries to a third party."""
+    """Optional ntfy topic for push alerts (disabled by default to avoid external publishing)."""
 
     ntfy_server: str = "https://ntfy.sh"
 
     stall_after: float = 720.0
-    """Seconds of text with no tool call before a busy turn counts as a reasoning stall."""
+    """Seconds of text output without a tool call before flagging a reasoning stall."""
 
     quiet_after: float = 300.0
-    """Seconds with neither text nor tools before a busy turn counts as hung."""
+    """Seconds without text or tool activity before flagging a busy turn as hung."""
 
     text_recent: float = 120.0
-    """How recent text must be for a turn to count as still thinking."""
+    """Maximum age (in seconds) of recent text output for a turn to be considered active."""
 
     poll_interval: float = 2.0
-    """Seconds between monitor ticks (result file, protected files, stall checks)."""
+    """Interval in seconds between monitor checks (result file, protected files, stalls)."""
 
     max_stream_line: int = 128 * 1024
     notify_timeout: float = 30.0
@@ -114,18 +115,18 @@ class Settings(BaseSettings):
 
 @dataclass(frozen=True, slots=True)
 class TaskPaths:
-    """Where one task's state, evidence and control files live.
+    """Paths to state, log, and control files for a single task.
 
-    One directory per task keeps everything a reviewer needs to reconstruct a
-    run in a single place, and lets ``rm -r`` reset a task cleanly.
+    Keeping each task in its own directory makes it straightforward to inspect
+    a run or reset it by deleting the directory.
     """
 
     root: Path
 
     @classmethod
     def for_task(cls, state_root: Path, task_dir: Path) -> TaskPaths:
-        # The name is for humans typing ``--task`` on a phone; the hash keeps two
-        # checkouts with the same folder name from sharing state.
+        # Include the directory name for readability when passing --task, and a
+        # short path hash so two checkouts with the same folder name don't collide.
         digest = hashlib.sha256(str(task_dir).encode()).hexdigest()[:6]
         return cls(state_root.expanduser() / f"{task_dir.name}-{digest}")
 

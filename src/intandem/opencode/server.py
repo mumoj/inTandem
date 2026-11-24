@@ -1,10 +1,8 @@
-"""Which ``opencode serve`` inTandem can drive, and where to find it.
+"""OpenCode binary discovery, port selection, and server version probing.
 
-OpenCode 1.x and 2.x serve entirely different APIs from the same command, and
-2.x's installer replaces a 1.x binary in place. So the version is read from
-the running server, never assumed: 1.x answers ``/global/health``, 2.x
-``/api/info``, and each gets its own client. Any other major is refused before
-a task attaches, rather than failing on every call with a 404.
+OpenCode 1.x exposes ``/global/health`` while 2.x exposes ``/api/info`` with a
+different REST API. We probe the running server's version to select the right
+client and reject unsupported major versions early.
 """
 
 from __future__ import annotations
@@ -23,7 +21,7 @@ _VERSION = re.compile(r"(\d+)\.(\d+)\.(\d+)")
 
 
 class UnsupportedVersionError(RuntimeError):
-    """The installed OpenCode speaks a server API this package does not."""
+    """Raised when the running OpenCode server reports an unsupported major version."""
 
 
 @dataclass(frozen=True, order=True, slots=True)
@@ -55,7 +53,7 @@ def require_supported(version: Version) -> Version:
 
 
 def probe_version(http: httpx.Client, url: str) -> Version | None:
-    """The version a running server reports, or ``None`` if it does not answer yet."""
+    """Query the server's version endpoint, returning ``None`` if it is not responding yet."""
     for path in ("/global/health", "/api/info"):
         response = http.get(f"{url}{path}")
         if response.is_success and _is_json(response):
@@ -64,7 +62,7 @@ def probe_version(http: httpx.Client, url: str) -> Version | None:
 
 
 async def aprobe_version(http: httpx.AsyncClient, url: str) -> Version:
-    """``probe_version`` for a server that is known to be up. Raises if it is not."""
+    """Async version of ``probe_version`` for a running server; raises if neither API responds."""
     for path in ("/global/health", "/api/info"):
         response = await http.get(f"{url}{path}")
         if response.is_success and _is_json(response):
@@ -73,15 +71,15 @@ async def aprobe_version(http: httpx.AsyncClient, url: str) -> Version:
 
 
 def _is_json(response: httpx.Response) -> bool:
-    # 2.x answers unknown paths, /global/health among them, with its web app's HTML.
+    # OpenCode 2.x serves its web app HTML for unknown paths such as /global/health.
     return response.headers.get("content-type", "").startswith("application/json")
 
 
 def resolve_binary(name: str, *, install: bool = True) -> str:
-    """An absolute path to the OpenCode binary, installing it if there is none.
+    """Return the path to the OpenCode binary, installing the default binary if missing.
 
-    Only the default name is installed: a custom ``name`` is someone's choice of
-    binary, and a missing one is a mistake to report, not to paper over.
+    Only auto-installs when ``name`` is ``"opencode"``; an explicit custom
+    binary name raises ``FileNotFoundError`` if missing.
     """
     found = shutil.which(name)
     if found:
@@ -98,11 +96,10 @@ def resolve_binary(name: str, *, install: bool = True) -> str:
 
 
 def free_port() -> int:
-    """A port that was free a moment ago.
+    """Pick an available loopback port.
 
-    ``opencode serve --port 0`` does not bind an ephemeral port; it falls back
-    to its default 4096. So the port is chosen here, both to avoid colliding
-    with another server and so it is known before the server starts.
+    ``opencode serve --port 0`` falls back to port 4096 instead of binding an
+    ephemeral port, so we select a free port beforehand.
     """
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
         probe.bind(("127.0.0.1", 0))

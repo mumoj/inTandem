@@ -1,7 +1,7 @@
-"""The manifest: how a client finds a running bridge.
+"""Manifest file written by a running bridge so clients can locate and authenticate to it.
 
-It carries the bearer token and OpenCode's password, so it is written 0600
-before any content exists and removed when the supervisor stops cleanly.
+Because it stores the bearer token and OpenCode password, it is created with
+0600 permissions and removed on clean shutdown.
 """
 
 from __future__ import annotations
@@ -22,20 +22,20 @@ class Manifest(BaseModel):
     host: str
     port: int
     path: str = ""
-    """Where this task's bridge is mounted, when one server hosts several."""
+    """URL prefix where this task's bridge is mounted on the hub."""
     token: SecretStr
     task_dir: str
     state_dir: str
     pid: int = Field(default_factory=os.getpid)
     opencode_port: int | None = None
     opencode_version: str | None = None
-    # Lets a human attach OpenCode's own TUI or web UI to the live session.
+    # Stored so `inTandem attach` can connect OpenCode's TUI or web UI to the live session.
     opencode_password: SecretStr | None = None
     started_at: float = Field(default_factory=time.time)
 
     @field_serializer("token", "opencode_password", when_used="json")
     def _reveal_secret(self, secret: SecretStr | None) -> str | None:
-        # The manifest file is the one place these are meant to be written.
+        # Unwrap secrets when serializing to the 0600 manifest file on disk.
         return secret.get_secret_value() if secret is not None else None
 
     @property
@@ -44,7 +44,7 @@ class Manifest(BaseModel):
 
     @property
     def dashboard_url(self) -> str:
-        # The token rides in the fragment, which a browser never sends anywhere.
+        # Pass the token in the URL fragment so browsers never send it in HTTP requests.
         return f"{self.url}/ui#token={self.token.get_secret_value()}"
 
     @property
@@ -53,7 +53,7 @@ class Manifest(BaseModel):
 
     @property
     def alive(self) -> bool:
-        """Whether the process that wrote this manifest still exists."""
+        """Return True if the PID that created this manifest is still running."""
         try:
             os.kill(self.pid, 0)
         except ProcessLookupError:

@@ -1,12 +1,12 @@
-"""Every supervised task, behind one server and one OpenCode.
+"""Shared FastAPI server and OpenCode host for running supervised tasks.
 
-The hub is the only way inTandem runs a task: one FastAPI app with each task's
-bridge mounted at ``/t/<task>``, one uvicorn, and one shared OpenCode server.
-``inTandem mcp`` runs one for the planner's session; ``inTandem serve`` runs one of
-its own, for a task started by hand.
+All tasks run through a ``Hub``: a single FastAPI app with each task's bridge
+mounted at ``/t/<task>``, served by uvicorn alongside one shared OpenCode
+server. ``inTandem mcp`` runs a hub for the duration of the MCP session, while
+``inTandem serve`` runs one for a single manually started task.
 
-A task's manifest points at its mount, so the CLI, the MCP tools and the
-dashboard find every task the same way, whichever hub it runs on.
+Each task writes a manifest pointing to its mounted URL so the CLI, MCP tools,
+and web dashboard locate tasks uniformly regardless of which hub owns them.
 """
 
 from __future__ import annotations
@@ -43,7 +43,7 @@ log = logging.getLogger(__name__)
 
 
 def bind_loopback(port: int) -> socket.socket:
-    """Bind the hub's socket ourselves so its port is known before serving."""
+    """Bind a loopback socket up front so the chosen port is known before uvicorn starts."""
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     sock.bind(("127.0.0.1", port))
@@ -51,7 +51,7 @@ def bind_loopback(port: int) -> socket.socket:
 
 
 class _Embedded(uvicorn.Server):
-    """uvicorn without signal handlers of its own: the process's owner handles them."""
+    """Uvicorn server subclass that leaves signal handling to the caller."""
 
     @contextlib.contextmanager
     def capture_signals(self) -> Generator[None, None, None]:
@@ -59,10 +59,10 @@ class _Embedded(uvicorn.Server):
 
 
 class TaskRoutes:
-    """The ASGI app at ``/t/{key}``: hands each request to that task's bridge.
+    """ASGI dispatcher mounted at ``/t/{key}`` that forwards requests to each task's bridge.
 
-    Mounted once. Tasks come and go in a dict, so the router itself never
-    changes while it is serving.
+    Tasks are added to and removed from ``self.apps`` at runtime so the parent
+    router never needs to be mutated while serving.
     """
 
     def __init__(self) -> None:
@@ -96,21 +96,21 @@ class _Running:
 
 @dataclass
 class Hub:
-    """One FastAPI server and one OpenCode server for many supervised tasks."""
+    """Hosts multiple supervised tasks behind one FastAPI server and shared OpenCode instance."""
 
     state_root: Path
     new_opencode: Callable[[], SharedHost]
-    """Starts the shared OpenCode server. Called on the event loop's thread."""
+    """Factory that starts the shared OpenCode server on the event loop thread."""
     token: str = field(default_factory=lambda: secrets.token_urlsafe(32))
     port: int = 0
-    """Where to listen; 0 picks a free port. The bound port once started."""
+    """Listening port (0 picks a free port; updated to the bound port after startup)."""
     app: FastAPI = field(init=False)
     opencode: SharedHost | None = field(default=None, init=False)
     _server: _Embedded | None = field(default=None, init=False)
     _serving: asyncio.Task[None] | None = field(default=None, init=False)
     _tasks: dict[Path, _Running] = field(default_factory=dict[Path, _Running], init=False)
     failures: dict[Path, Exception] = field(default_factory=dict[Path, Exception], init=False)
-    """Why each task that stopped with an error stopped, by task directory."""
+    """Exceptions recorded for tasks that exited with an error, keyed by task directory."""
     routes: TaskRoutes = field(default_factory=TaskRoutes, init=False)
 
     def __post_init__(self) -> None:
@@ -129,10 +129,10 @@ class Hub:
         return f"{self.url}/ui#token={self.token}"
 
     async def start(self) -> None:
-        """Start serving the hub HTTP app.
+        """Start the hub HTTP server.
 
-        The shared OpenCode server starts lazily on the first OpenCode task, so
-        a Claude-only session never installs or boots OpenCode.
+        The shared OpenCode server is started lazily on the first OpenCode task
+        so sessions using other harnesses do not require OpenCode.
         """
         sock = bind_loopback(self.port)
         self.port = sock.getsockname()[1]
@@ -141,12 +141,12 @@ class Hub:
         self._serving = asyncio.create_task(self._server.serve(sockets=[sock]))
         while not self._server.started:
             if self._serving.done():
-                self._serving.result()  # re-raise whatever stopped it
+                self._serving.result()  # Re-raise the startup error.
                 raise RuntimeError("the hub stopped before it started")
             await asyncio.sleep(0.02)
 
     async def close(self) -> None:
-        """Stop every task, capturing its evidence, then the server."""
+        """Stop all running tasks, then shut down the HTTP server and OpenCode."""
         await asyncio.gather(*(self.stop_task(task_dir) for task_dir in list(self._tasks)))
         if self._server is not None and self._serving is not None:
             self._server.should_exit = True
@@ -165,15 +165,15 @@ class Hub:
         protect: list[str] | None = None,
         **options: Any,
     ) -> Manifest:
-        """Supervise ``task_dir``, mounted on this server. Idempotent.
+        """Start supervising ``task_dir`` on this hub, or return its manifest if already running.
 
-        ``options`` are further ``Settings`` fields, such as ``notify_cmd``.
+        Additional keyword ``options`` are forwarded to ``Settings``.
         """
         paths = TaskPaths.for_task(self.state_root, task_dir)
         if task_dir in self._tasks:
             return Manifest.read(paths.manifest)
-        # Only what was asked for: an explicit None would hide INTANDEM_MODEL and
-        # INTANDEM_PROTECTED, since pydantic-settings prefers arguments to the environment.
+        # Omit None values so pydantic-settings can fall back to environment variables
+        # like INTANDEM_MODEL and INTANDEM_PROTECTED.
         chosen: dict[str, Any] = {"model": model, "protected": protect, **options}
         settings = Settings(
             task_dir=task_dir,
@@ -181,7 +181,7 @@ class Hub:
             **{key: value for key, value in chosen.items() if value is not None},
         )
         if settings.harness == "opencode":
-            # Only OpenCode tasks start or wait for the shared server.
+            # Only start or wait for the shared OpenCode server when needed.
             opencode = await self.ready_opencode()
             password = SecretStr(opencode.password)
             update = {"opencode_url": opencode.url, "opencode_password": password}
@@ -195,20 +195,20 @@ class Hub:
             raise
 
     async def ready_opencode(self) -> SharedHost:
-        """The shared server, started lazily or restarted if it died."""
+        """Return the shared OpenCode server, starting or restarting it if needed."""
         if self.opencode is None or (self.opencode.process and not self.opencode.alive):
             self.opencode = self.new_opencode()
         await anyio.to_thread.run_sync(self.opencode.wait_ready, self.opencode.startup_timeout)
         return self.opencode
 
     async def wait_task(self, task_dir: Path) -> None:
-        """Return once the task in ``task_dir`` has stopped, for whatever reason."""
+        """Wait until the task for ``task_dir`` exits."""
         running = self._tasks.get(task_dir)
         if running is not None:
             await asyncio.wait({running.done})
 
     async def stop_task(self, task_dir: Path) -> bool:
-        """Stop one task as ``/finish`` would. False if it was not running."""
+        """Stop a running task cleanly. Returns ``False`` if it was not running."""
         running = self._tasks.get(task_dir)
         if running is None:
             return False
@@ -255,7 +255,7 @@ class Hub:
             if not ready.done():
                 ready.set_exception(exc)
             else:
-                # One task failing must not take the others, or the hub, with it.
+                # Isolate task failures so one crash does not stop other tasks or the hub.
                 log.exception("task %s stopped with an error", key)
                 self.failures[settings.task_dir] = exc
 
@@ -275,17 +275,17 @@ def read_tasks(hub: Annotated[Hub, Depends(get_hub)]) -> HubTasks:
 
 @router.get("/ui", include_in_schema=False)
 def overview_page() -> HTMLResponse:
-    """Every task of the session. Public, holds no data: see ``intandem.bridge.app``."""
+    """Serve the overview page listing all tasks. Contains no sensitive data itself."""
     page = files("intandem.bridge").joinpath("hub.html").read_text(encoding="utf-8")
     return HTMLResponse(page, headers=dashboard_headers())
 
 
 @contextlib.contextmanager
 def stop_on_signals(stop: asyncio.Event) -> Generator[None, None, None]:
-    """Turn SIGINT/SIGTERM into ``stop.set()`` while the block runs.
+    """Set ``stop`` on SIGINT or SIGTERM for the duration of the context.
 
-    ``signal.signal`` rather than the loop's handler, so the previous handlers
-    come back exactly as they were, whoever installed them.
+    Uses ``signal.signal`` rather than the event loop's handler API so any
+    previously installed handlers are restored cleanly on exit.
     """
     loop = asyncio.get_running_loop()
 
@@ -301,12 +301,10 @@ def stop_on_signals(stop: asyncio.Event) -> Generator[None, None, None]:
 
 
 async def serve(settings: Settings, *, ready: Callable[[Manifest], None] | None = None) -> None:
-    """``inTandem serve``: one task on a hub of its own, until it finishes or a signal.
+    """Run a single task on its own hub until it finishes or receives a signal.
 
-    The same hub ``inTandem mcp`` runs, so a task started by hand behaves exactly
-    like one a planner started. It returns when the task stops, through
-    ``/finish``, a lost OpenCode, or SIGINT/SIGTERM, and raises what stopped it
-    if that was an error.
+    Uses the same ``Hub`` as ``inTandem mcp`` so manually started tasks behave
+    identically. Re-raises the task's exception if it stopped due to an error.
     """
     records = settings.state_root / "hosts"
     reap_orphans(records)
@@ -315,13 +313,12 @@ async def serve(settings: Settings, *, ready: Callable[[Manifest], None] | None 
         binary = resolve_binary(settings.opencode_bin)
         port: dict[str, Any] = {"port": settings.opencode_port} if settings.opencode_port else {}
         host = SharedHost(binary, log_path=records / f"{os.getpid()}.log", records=records, **port)
-        # Called on the event loop's thread, which lives as long as this process.
+        # Runs on the main event loop thread, which lives for the full process lifetime.
         host.start(die_with_parent=True)
         return host
 
     task_dir = settings.task_dir
-    # The task's own options, as given: the hub reads the rest from the
-    # environment, as it does for a task the MCP server starts.
+    # Pass only explicitly set task options so unset fields still inherit from the environment.
     options = settings.model_dump(
         exclude_unset=True,
         exclude={

@@ -1,4 +1,4 @@
-"""The hub against a real ``opencode serve``: many tasks, one server each of ours and theirs."""
+"""Integration tests for ``Hub`` running multiple tasks against a real ``opencode serve``."""
 
 from __future__ import annotations
 

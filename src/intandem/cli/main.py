@@ -1,20 +1,20 @@
-"""``inTandem``: one command for the planner and for a human on a phone.
+"""CLI entry point for ``inTandem``.
 
-``inTandem serve`` runs the supervisor. Every other command drives a running one
-through its bridge, with the same verbs whoever is typing them. Output is terse
-by default and the raw JSON response with ``--json``.
+``inTandem serve`` starts a supervisor for a task directory, and the remaining
+subcommands talk to a running supervisor through its HTTP bridge. Output is
+compact plain text by default, or raw JSON with ``--json``.
 
-Exit codes are part of the interface, so a planner can branch without parsing:
+Exit codes:
 
 ====  ==========================================================
-0     ok; for ``wait``, a result was written or the turn ended
-1     the bridge refused the request (the message says why)
-2     usage error, or an ambiguous request (several pending ids)
-3     no running supervisor, or the bridge did not answer
+0     success; for ``wait``, a result was written or the turn ended
+1     request rejected by the bridge (see stderr for details)
+2     usage error or ambiguous target (e.g. multiple pending IDs)
+3     no running supervisor found or bridge unreachable
 4     ``wait``: hung
-5     ``wait``: blocked on a permission or question
+5     ``wait``: blocked on a permission request or question
 6     ``wait``: provider error or protected-file violation
-7     ``wait``: the supervisor is stopping
+7     ``wait``: supervisor is shutting down
 8     ``wait``: reasoning stall
 124   ``wait``: timed out while the implementer was still working
 ====  ==========================================================
@@ -114,7 +114,7 @@ def _fail(exc: CliError) -> NoReturn:
 
 @contextmanager
 def bridge(ctx: typer.Context) -> Generator[BridgeClient, None, None]:
-    """A client for the target supervisor; turns ``CliError`` into an exit code."""
+    """Open a ``BridgeClient`` for the target supervisor, converting ``CliError`` to ``Exit``."""
     target: Target = ctx.obj
     try:
         path = find_manifest(target.state_root, task=target.task, manifest=target.manifest)
@@ -134,7 +134,7 @@ def _emit(data: BaseModel, as_json: bool, lines: list[str]) -> None:
 
 
 def _read_text(words: list[str] | None, file: Path | None) -> str:
-    """Text from ``--file`` (``-`` is stdin), from arguments, or piped on stdin."""
+    """Read input text from ``--file`` (``-`` for stdin), positional args, or piped stdin."""
     if file is not None:
         return sys.stdin.read() if str(file) == "-" else file.read_text(encoding="utf-8")
     if words and words != ["-"]:
@@ -178,7 +178,7 @@ def serve(
 
     It runs on a hub of its own, as under `inTandem mcp`.
     """
-    from intandem.hub import serve as serve_hub  # deferred: client commands should start fast
+    from intandem.hub import serve as serve_hub  # Lazy import to keep client subcommands fast.
 
     logging.basicConfig(
         level=logging.DEBUG if verbose else logging.INFO,
@@ -186,7 +186,7 @@ def serve(
         datefmt="%H:%M:%S",
     )
     if not verbose:
-        # One line per request to OpenCode buries the journal lines that matter.
+        # Quiet httpx INFO logs so journal output stays readable.
         logging.getLogger("httpx").setLevel(logging.WARNING)
     target: Target = ctx.obj
     overrides: dict[str, Any] = {
@@ -228,7 +228,7 @@ def serve(
     except (UnsupportedVersionError, FileNotFoundError, RuntimeError) as exc:
         _fail(CliError(str(exc)))
     except ExceptionGroup as group:
-        # A part of the supervisor died and took the rest down with it.
+        # One of the task workers raised an unhandled exception.
         logging.getLogger("intandem").error("supervisor stopped", exc_info=group)
         _fail(CliError("; ".join(f"{type(e).__name__}: {e}" for e in group.exceptions)))
     except KeyboardInterrupt:
@@ -554,8 +554,8 @@ def attach(
     argv = [opencode_bin, "attach", m.opencode_url, "--dir", m.task_dir]
     if session_id:
         argv += ["--session", session_id]
-    # The password goes in the environment, not argv, where `ps` would show it.
-    # 1.x reads OPENCODE_SERVER_PASSWORD, 2.x prefers OPENCODE_PASSWORD.
+    # Pass the password via environment variables rather than argv so it is hidden from `ps`.
+    # OpenCode 1.x reads OPENCODE_SERVER_PASSWORD; 2.x reads OPENCODE_PASSWORD.
     env = {
         **os.environ,
         "OPENCODE_SERVER_PASSWORD": password,
